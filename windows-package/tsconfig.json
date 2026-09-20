@@ -1,0 +1,10 @@
+{
+  "extends": "../rdimm-app/tsconfig.json",
+  "compilerOptions": {
+    "paths": {"@/*": ["../rdimm-app/*"]},
+    "incremental": false,
+    "types": ["node", "react", "react-dom"]
+  },
+  "include": ["source/Home.tsx", "source/entry.tsx"],
+  "exclude": ["node_modules", "release"]
+}

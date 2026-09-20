@@ -1,0 +1,14 @@
+import path from 'node:path';
+import fs from 'node:fs/promises';
+import {fileURLToPath} from 'node:url';
+import {build as viteBuild} from 'vite';
+import {build as esbuild} from 'esbuild';
+import tailwind from '@tailwindcss/postcss';
+const here=path.dirname(fileURLToPath(import.meta.url));
+const app=path.resolve(here,'../rdimm-app');const output=path.join(here,'release/RDIMM-Windows');
+await viteBuild({configFile:false,root:path.join(here,'source'),base:'/',plugins:[{name:'local-copy',transform(code,id){if(id===path.join(here,'source/Home.tsx'))return code.replace('样品业务台账','Windows 本地版').replace('数据已同步','已保存到本机').replace('每笔送样对应一个批次。','数据仅保存在本机，不与线上同步。每笔送样对应一个批次。')}}],resolve:{alias:{'@':app}},esbuild:{jsx:'automatic'},css:{postcss:{plugins:[tailwind()]}},build:{outDir:path.join(output,'public'),emptyOutDir:true}});
+await fs.copyFile(path.join(app,'public/favicon.svg'),path.join(output,'public/favicon.svg'));
+await esbuild({entryPoints:[path.join(here,'source/server.mjs')],bundle:true,platform:'node',format:'cjs',target:'node24',outfile:path.join(output,'server.cjs'),plugins:[{name:'local-storage',setup(b){b.onResolve({filter:/^@\/lib\/storage$/},()=>({path:path.join(here,'source/storage.mjs')}))}}]});
+await fs.copyFile(path.resolve(here,'../.work/windows-initial.json'),path.join(output,'initial-data.json'));
+await fs.writeFile(path.join(output,'启动RDIMM.cmd'),'@echo off\r\nsetlocal\r\ntitle RDIMM Sample Manager\r\npushd "%~dp0"\r\nif not exist "runtime\\node.exe" (\r\n  echo Please extract the entire ZIP file first.\r\n  pause\r\n  exit /b 1\r\n)\r\n"runtime\\node.exe" --no-warnings server.cjs --open\r\nif errorlevel 1 (\r\n  echo Startup failed. See the message above.\r\n  pause\r\n)\r\npopd\r\n');
+console.log('Windows application files built.');

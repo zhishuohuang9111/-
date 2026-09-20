@@ -1,0 +1,14 @@
+import fs from 'node:fs';
+import vm from 'node:vm';
+import assert from 'node:assert/strict';
+const source=fs.readFileSync(new URL('./source/Home.tsx',import.meta.url),'utf8');
+const hook=source.match(/useEffect\(\(\)=>\{\n  let reminder:[\s\S]*?\n \},\[\]\);/)[0].replace(':ReturnType<typeof setTimeout>|undefined','').replace(':BeforeUnloadEvent','');
+let handler,cleanup,modal;const timers=new Map();let seq=0;
+const exitedRef={current:false},exportPending={current:false};
+vm.runInNewContext(hook,{useEffect:f=>cleanup=f(),exitedRef,exportPending,setModal:v=>modal=v,setTimeout:f=>{timers.set(++seq,f);return seq},clearTimeout:id=>timers.delete(id),window:{addEventListener:(n,f)=>{assert.equal(n,'beforeunload');handler=f},removeEventListener:()=>handler=null}});
+let prevented=false;const event={preventDefault:()=>prevented=true,returnValue:''};
+handler(event);assert(prevented);assert(event.returnValue);assert.equal(timers.size,1);
+for(const f of timers.values())f();assert.equal(modal,'exit');
+modal=null;exitedRef.current=true;prevented=false;handler(event);assert(!prevented);assert.equal(modal,null);
+cleanup();assert.equal(handler,null);assert.equal(timers.size,0);
+console.log('PASS: native close guard, backup prompt on retained page, no guard after app exit, listener/timer cleanup');
