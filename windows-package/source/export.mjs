@@ -10,7 +10,7 @@ export function exportWorkbook(snapshot,now=new Date(),directory=path.join(proce
  const day=stamp.slice(0,10);
  const state=r=>{if(!r.sent)return '待送样';if(r.returned>=r.quantity)return '已归还';if(!r.due)return '待约定日期';const d=(Date.parse(r.due.slice(0,10))-Date.parse(day))/86400000;return d<0?'已逾期':d===0?'今日到期':d<=7?'即将到期':r.returned?'部分归还':'借出中'};
  const byId=new Map(snapshot.rows.map(r=>[r.id,r]));
- const data=[snapshot.rows.map(r=>({...r,sentQuantity:r.sent?r.quantity:0,remaining:r.sent?r.quantity-r.returned:0,status:state(r)})),snapshot.returns.map(r=>({...byId.get(r.sample_id),...r}))];
+ const data=[snapshot.rows.map(r=>({...r,sentQuantity:r.sent?r.quantity:0,remaining:r.sent?r.quantity-r.returned:0,status:state(r)})),snapshot.returns.map(r=>({...byId.get(r.sample_id),...r,report_status:r.report_provided==='yes'?'已提供':r.report_provided==='no'?'未提供':'未登记'}))];
  const files=unzipSync(Buffer.from(template,'base64'));
  for(let i=0;i<2;i++){
   if(data[i].length>1048572)throw Error('记录数量超过 Excel 单表上限');

@@ -4,9 +4,10 @@ import path from 'node:path';
 import {createHash} from 'node:crypto';
 import {spawn} from 'node:child_process';
 import {GET,POST} from '../../rdimm-app/app/api/samples/route.ts';
+import {parseReport,maxReportSize,problem} from './reports.mjs';
 import {createInterface} from 'node:readline';
 import {exportWorkbook} from './export.mjs';
-import {root,close,deleteSample,resetSamples,snapshot} from './storage.mjs';
+import {root,close,deleteSample,resetSamples,snapshot,saveReturn,readReport} from './storage.mjs';
 const identity=createHash('sha256').update(path.resolve(root)).digest('hex').slice(0,16);
 const publicDir=path.resolve('public');
 const mime={'.html':'text/html; charset=utf-8','.js':'text/javascript; charset=utf-8','.css':'text/css; charset=utf-8','.svg':'image/svg+xml','.woff2':'font/woff2'};
@@ -19,6 +20,30 @@ const server=http.createServer(async(req,res)=>{
   res.setHeader('X-Content-Type-Options','nosniff');res.setHeader('Cache-Control','no-store');
   if(url.pathname==='/health'){res.setHeader('Content-Type','application/json');res.end(JSON.stringify({app:'rdimm-windows',identity}));return}
   if(stopping){res.writeHead(503).end(JSON.stringify({error:'程序正在退出'}));return}
+  if(url.pathname.startsWith('/api/reports/')){
+   if(!['GET','HEAD'].includes(req.method)){res.writeHead(405).end();return}
+   const report=readReport(decodeURIComponent(url.pathname.slice('/api/reports/'.length)));
+   if(!report){res.writeHead(404).end('报告不存在或已删除');return}
+   res.setHeader('Content-Type',report.mime);
+   res.setHeader('Content-Disposition',`${report.inline?'inline':'attachment'}; filename="report"; filename*=UTF-8''${encodeURIComponent(report.name).replace(/'/g,'%27')}`);
+   res.setHeader('Content-Security-Policy',"sandbox; default-src 'none'");
+   res.setHeader('Content-Length',report.data.length);
+   res.end(req.method==='HEAD'?undefined:Buffer.from(report.data));return;
+  }
+  if(url.pathname==='/api/returns'){
+   res.setHeader('Content-Type','application/json; charset=utf-8');
+   try{
+    if(req.method!=='POST')throw problem('不支持的请求方式',405);
+    if(req.headers.origin!==url.origin)throw problem('请求来源无效',403);
+    let size=0;const chunks=[];for await(const chunk of req){size+=chunk.length;if(size>maxReportSize+65536)throw problem('测试报告不能超过 20 MB',413);chunks.push(chunk)}
+    const form=await new Request(url,{method:'POST',headers:{'Content-Type':req.headers['content-type']||''},body:Buffer.concat(chunks)}).formData();
+    const file=await parseReport(form.get('report_file'));
+    const values=Object.fromEntries(form);delete values.report_file;
+    if(!['return','report'].includes(values.action))throw problem('不支持的操作');
+    res.end(JSON.stringify(saveReturn(values,file,values.action==='report')));
+   }catch(e){console.error(e);res.writeHead(e.status||500).end(JSON.stringify({error:e.status?e.message:'保存失败，归还和报告均未保存，请重试'}))}
+   return;
+  }
   if(url.pathname==='/api/export'||url.pathname==='/api/shutdown'){
    res.setHeader('Content-Type','application/json; charset=utf-8');
    if(req.method!=='POST'){res.writeHead(405).end();return}
@@ -44,11 +69,14 @@ const server=http.createServer(async(req,res)=>{
     if(payload?.action==='reset'){
      if(req.headers.origin&&new URL(req.headers.origin).host!==url.host){response=Response.json({error:'请求来源无效'},{status:403})}
      else if(payload.confirm!==true||typeof payload.requestId!=='string'||!/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(payload.requestId)){response=Response.json({error:'请先确认删除全部数据'},{status:400})}
-     else {try{response=Response.json(resetSamples(payload.requestId))}catch(e){console.error(e);response=Response.json({error:'备份或删除失败，台账未被删除。请检查数据文件夹是否可写后重试。'},{status:500})}}
+     else {try{response=Response.json(resetSamples(payload.requestId))}catch(e){console.error(e);response=Response.json({error:'备份或删除失败，台账未被删除。请检查 back_up 和 data 文件夹是否可写、磁盘空间是否充足后重试。'},{status:500})}}
     }else if(payload?.action==='delete'){
      if(req.headers.origin&&new URL(req.headers.origin).host!==url.host){response=Response.json({error:'请求来源无效'},{status:403})}
      else if(typeof payload.id!=='string'||!payload.id.trim()||payload.id.length>200||payload.confirm!==true){response=Response.json({error:'请先选择并确认要删除的记录'},{status:400})}
      else response=Response.json(deleteSample(payload.id));
+    }else if(payload?.action==='return'){
+     if(req.headers.origin&&new URL(req.headers.origin).host!==url.host)response=Response.json({error:'请求来源无效'},{status:403});
+     else try{response=Response.json(saveReturn(payload))}catch(e){response=Response.json({error:e.message},{status:e.status||500})}
     }else response=await POST(new Request(url,{method:'POST',headers:req.headers,body}));
    }else{res.writeHead(405).end();return}
    res.writeHead(response.status,Object.fromEntries(response.headers));res.end(Buffer.from(await response.arrayBuffer()));return;

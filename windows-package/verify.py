@@ -1,9 +1,13 @@
+import shutil
 import os,sys,tempfile,subprocess,urllib.request,urllib.error,json,uuid,socket,time,pathlib,datetime,concurrent.futures,sqlite3
 opener=urllib.request.build_opener(urllib.request.ProxyHandler({}))
 package=pathlib.Path(__file__).resolve().parent/'release'/'RDIMM-Windows'
 node='/Users/yanmeng/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node'
 today=datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=8))).date();d=str(today);due=str(today+datetime.timedelta(days=7))
 with tempfile.TemporaryDirectory(prefix='rdimm-verification-') as tmp:
+ test_package=pathlib.Path(tmp)/'app'
+ shutil.copytree(package,test_package,ignore=shutil.ignore_patterns('runtime','data','back_up'))
+ package=test_package
  with socket.socket() as s:s.bind(('127.0.0.1',0));port=s.getsockname()[1]
  env={**os.environ,'RDIMM_DATA_DIR':tmp,'RDIMM_PORT':str(port)};base=f'http://127.0.0.1:{port}'
  def launch():

@@ -36,10 +36,21 @@ with tempfile.TemporaryDirectory(prefix='rdimm-export-') as tmp:
   before=f.read_bytes();code,second=post('/api/export',{});assert code==200 and second['filename']!=result['filename'];assert f.read_bytes()==before
   shutil.copyfile(f,package.parent.parent.parent/'.work/export-verified.xlsx')
   saved=root/'saved';(root/'back_up').rename(saved);(root/'back_up').write_text('blocked directory')
+  before_reset=json.load(opener.open(base+'/api/samples'))
+  reset_key=str(uuid.uuid4())
+  assert post('/api/samples',{'action':'reset','confirm':True,'requestId':reset_key})[0]==500
+  assert json.load(opener.open(base+'/api/samples'))==before_reset
   assert post('/api/shutdown',{'confirm':True,'export':True})[0]==500
   assert opener.open(base+'/health').status==200
   (root/'back_up').unlink();saved.rename(root/'back_up')
-  assert post('/api/samples',{'action':'reset','confirm':True,'requestId':str(uuid.uuid4())})[0]==200
+  code,reset=post('/api/samples',{'action':'reset','confirm':True,'requestId':reset_key});assert code==200,reset
+  backup=load_workbook(root/reset['excelBackup'])
+  assert backup.worksheets[0].max_row==len(before_reset['rows'])+4
+  assert backup.worksheets[1].max_row==len(before_reset['returns'])+4
+  assert json.load(opener.open(base+'/api/samples'))=={'rows':[],'returns':[]}
+  count=len(list((root/'back_up').glob('*.xlsx')))
+  assert post('/api/samples',{'action':'reset','confirm':True,'requestId':reset_key})==(200,reset)
+  assert len(list((root/'back_up').glob('*.xlsx')))==count
   code,empty=post('/api/export',{});assert code==200
   empty_wb=load_workbook(root/empty['path']);assert all(s.max_row==4 for s in empty_wb.worksheets)
   code,result=post('/api/shutdown',{'confirm':True,'export':True});assert code==200;assert (root/result['path']).is_file()

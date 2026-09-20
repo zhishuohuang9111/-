@@ -24,176 +24,84 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
 
 // windows-package/source/server.mjs
 var import_node_http = __toESM(require("node:http"), 1);
-var import_node_fs3 = __toESM(require("node:fs"), 1);
-var import_node_path3 = __toESM(require("node:path"), 1);
-var import_node_crypto2 = require("node:crypto");
+var import_node_fs4 = __toESM(require("node:fs"), 1);
+var import_node_path5 = __toESM(require("node:path"), 1);
+var import_node_crypto3 = require("node:crypto");
 var import_node_child_process = require("node:child_process");
 
 // windows-package/source/storage.mjs
 var import_node_sqlite = require("node:sqlite");
+var import_node_fs3 = __toESM(require("node:fs"), 1);
+var import_node_path4 = __toESM(require("node:path"), 1);
+var import_node_crypto2 = require("node:crypto");
+
+// windows-package/source/attachments.mjs
 var import_node_fs = __toESM(require("node:fs"), 1);
 var import_node_path = __toESM(require("node:path"), 1);
 var import_node_crypto = require("node:crypto");
-var root = process.env.RDIMM_DATA_DIR || import_node_path.default.join(process.cwd(), "data");
-import_node_fs.default.mkdirSync(root, { recursive: true });
-var file = import_node_path.default.join(root, "rdimm.sqlite");
-var existing = import_node_fs.default.existsSync(file);
-var sql = new import_node_sqlite.DatabaseSync(file);
-sql.exec("PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL;");
-if (existing) {
-  const backupDir = import_node_path.default.join(root, "backups");
-  import_node_fs.default.mkdirSync(backupDir, { recursive: true });
-  const target = import_node_path.default.join(backupDir, `rdimm-${(/* @__PURE__ */ new Date()).toISOString().slice(0, 10)}.sqlite`);
-  if (!import_node_fs.default.existsSync(target)) sql.prepare("VACUUM INTO ?").run(target);
-}
-sql.exec(`CREATE TABLE IF NOT EXISTS samples(id TEXT PRIMARY KEY,data TEXT NOT NULL,quantity INTEGER NOT NULL CHECK(quantity>0));
-CREATE TABLE IF NOT EXISTS returns(id TEXT PRIMARY KEY,sample_id TEXT NOT NULL REFERENCES samples(id),quantity INTEGER NOT NULL CHECK(quantity>0),returned_on TEXT NOT NULL,note TEXT NOT NULL DEFAULT '');
-CREATE INDEX IF NOT EXISTS idx_returns_sample ON returns(sample_id);
-CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT NOT NULL);`);
-if (!sql.prepare("SELECT 1 FROM settings WHERE key='initialized'").get()) {
-  const snapshot2 = JSON.parse(import_node_fs.default.readFileSync(import_node_path.default.join(process.cwd(), "initial-data.json"), "utf8"));
-  sql.exec("BEGIN IMMEDIATE");
-  try {
-    for (const r of snapshot2.rows) sql.prepare("INSERT INTO samples(id,data,quantity) VALUES(?,?,?)").run(r.id, JSON.stringify(r), r.quantity);
-    for (const r of snapshot2.returns) sql.prepare("INSERT INTO returns(id,sample_id,quantity,returned_on,note) VALUES(?,?,?,?,?)").run(r.id, r.sample_id, r.quantity, r.returned_on, r.note || "");
-    sql.prepare("INSERT INTO settings VALUES('initialized','1')").run();
-    sql.exec("COMMIT");
-  } catch (e) {
-    sql.exec("ROLLBACK");
-    throw e;
-  }
-}
-function database() {
-  return { prepare(query) {
-    return { bind(...args) {
-      const stmt = sql.prepare(query);
-      return { run() {
-        const r = stmt.run(...args);
-        return { meta: { changes: Number(r.changes) } };
-      }, all() {
-        return { results: stmt.all(...args) };
-      }, first() {
-        return stmt.get(...args) || null;
-      } };
-    }, all() {
-      return { results: sql.prepare(query).all() };
-    } };
-  } };
-}
-async function ensureSeed() {
-}
-function deleteSample(id) {
-  sql.exec("BEGIN IMMEDIATE");
-  try {
-    sql.prepare("DELETE FROM returns WHERE sample_id=?").run(id);
-    const result = sql.prepare("DELETE FROM samples WHERE id=?").run(id);
-    sql.exec("COMMIT");
-    return { ok: true, id, deleted: Number(result.changes) > 0 };
-  } catch (e) {
-    sql.exec("ROLLBACK");
-    throw e;
-  }
-}
-function close() {
-  sql.close();
-}
-function resetSamples(requestId) {
-  const key = "reset:" + requestId;
-  const prior = sql.prepare("SELECT value FROM settings WHERE key=?").get(key);
-  if (prior) return JSON.parse(prior.value);
-  const backupDir = import_node_path.default.join(root, "backups");
-  import_node_fs.default.mkdirSync(backupDir, { recursive: true });
-  const backupName = "before-reset-" + (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-") + "-" + (0, import_node_crypto.randomUUID)().slice(0, 8) + ".sqlite";
-  sql.prepare("VACUUM INTO ?").run(import_node_path.default.join(backupDir, backupName));
-  sql.exec("BEGIN IMMEDIATE");
-  try {
-    const returnsRemoved = Number(sql.prepare("DELETE FROM returns").run().changes);
-    const samplesRemoved = Number(sql.prepare("DELETE FROM samples").run().changes);
-    const result = { ok: true, backup: "data/backups/" + backupName, samplesRemoved, returnsRemoved };
-    sql.prepare("INSERT OR REPLACE INTO settings(key,value) VALUES('initialized','1')").run();
-    sql.prepare("INSERT INTO settings(key,value) VALUES(?,?)").run(key, JSON.stringify(result));
-    sql.exec("COMMIT");
-    return result;
-  } catch (e) {
-    sql.exec("ROLLBACK");
-    throw e;
-  }
-}
-function snapshot() {
-  const rows = sql.prepare("SELECT s.*,COALESCE((SELECT SUM(r.quantity) FROM returns r WHERE r.sample_id=s.id),0) returned FROM samples s ORDER BY s.id").all().map((r) => ({ ...JSON.parse(r.data), id: r.id, quantity: r.quantity, returned: r.returned }));
-  return { rows, returns: sql.prepare("SELECT * FROM returns ORDER BY returned_on DESC,id").all() };
-}
-
-// rdimm-app/app/api/samples/route.ts
-var day = () => new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit" }).format(/* @__PURE__ */ new Date());
-function validDate(x) {
-  return typeof x === "string" && /^\d{4}-\d{2}-\d{2}$/.test(x) && !isNaN(Date.parse(x)) && new Date(x).toISOString().slice(0, 10) === x;
-}
-function str(x, max2 = 200) {
-  return typeof x === "string" ? x.trim().slice(0, max2) : "";
-}
-var fail = (error, status = 400) => Response.json({ error }, { status });
-async function GET() {
-  try {
-    await ensureSeed();
-    const db = database();
-    const result = await db.prepare("SELECT s.*,COALESCE((SELECT SUM(r.quantity) FROM returns r WHERE r.sample_id=s.id),0) returned FROM samples s ORDER BY s.id").all();
-    const returns = await db.prepare("SELECT * FROM returns ORDER BY returned_on DESC,id").all();
-    return Response.json({ rows: result.results.map((r) => ({ ...JSON.parse(r.data), id: r.id, quantity: r.quantity, returned: r.returned })), returns: returns.results }, { headers: { "Cache-Control": "no-store" } });
-  } catch (e) {
-    console.error(e);
-    return fail("\u53F0\u8D26\u6682\u65F6\u65E0\u6CD5\u52A0\u8F7D\uFF0C\u8BF7\u91CD\u8BD5", 503);
-  }
-}
-async function POST(req) {
-  if (req.headers.get("origin") && new URL(req.headers.get("origin")).host !== new URL(req.url).host) return fail("\u8BF7\u6C42\u6765\u6E90\u65E0\u6548", 403);
-  try {
-    const payload = await req.json();
-    if (!payload || typeof payload !== "object" || Array.isArray(payload)) return fail("\u8BF7\u6C42\u5185\u5BB9\u65E0\u6548");
-    const b = payload;
-    const db = database();
-    const note = str(b.note, 2e3);
-    let out;
-    if (b.action === "create") {
-      const q = Number(b.quantity);
-      if (!str(b.customer) || !str(b.owner) || !str(b.spec) || !Number.isInteger(q) || q < 1 || q > 1e6) return fail("\u8BF7\u586B\u5199\u5BA2\u6237\u3001\u7533\u8BF7\u4EBA\u3001\u89C4\u683C\u548C\u6709\u6548\u7684\u6574\u6570\u6570\u91CF");
-      if (b.due && !validDate(b.due)) return fail("\u5F52\u8FD8\u65E5\u671F\u65E0\u6548");
-      const id = "RD-" + crypto.randomUUID().slice(0, 8).toUpperCase();
-      const row = { id, customer: str(b.customer), owner: str(b.owner), spec: str(b.spec), quantity: q, platform: str(b.platform), part: str(b.part), batch: str(b.batch), due: b.due || null, applied: day(), sent: null, note, returned: 0 };
-      await db.prepare("INSERT INTO samples(id,data,quantity) VALUES(?,?,?)").bind(id, JSON.stringify(row), q).run();
-      return Response.json({ id });
+function saveAttachment(id, report) {
+  const key = (0, import_node_crypto.createHash)("sha256").update(String(id)).digest("hex").slice(0, 20);
+  const directory = import_node_path.default.join(process.cwd(), "Attachment", key);
+  const original = String(report.name).replace(/[<>:"/\\|?*\x00-\x1f\x7f]/g, "_").replace(/[. ]+$/g, "").slice(0, 160) || "report";
+  const name = "\u62A5\u544A_" + original;
+  import_node_fs.default.mkdirSync(directory, { recursive: true });
+  for (let index = 0; ; index++) {
+    const ext = import_node_path.default.extname(name), base = import_node_path.default.basename(name, ext);
+    const file2 = import_node_path.default.join(directory, index ? `${base}_${index}${ext}` : name);
+    let fd2;
+    try {
+      fd2 = import_node_fs.default.openSync(file2, "wx");
+    } catch (e) {
+      if (e.code !== "EEXIST") throw e;
+      if (import_node_fs.default.lstatSync(file2).isFile() && import_node_fs.default.readFileSync(file2).equals(Buffer.from(report.data))) return { file: file2, created: false };
+      continue;
     }
-    const record = await db.prepare("SELECT * FROM samples WHERE id=?").bind(str(b.id)).first();
-    if (!record) return fail("\u672A\u627E\u5230\u9001\u6837\u8BB0\u5F55", 404);
-    const r = JSON.parse(record.data);
-    if (b.action === "send") {
-      if (r.sent) return fail("\u8FD9\u7B14\u6837\u54C1\u5DF2\u7ECF\u9001\u51FA\uFF0C\u8BF7\u5237\u65B0\u9875\u9762", 409);
-      if (!str(b.batch) || !validDate(b.sent) || !validDate(b.due) || b.sent > day() || b.due < b.sent) return fail("\u8BF7\u8865\u5145\u6279\u6B21\uFF1B\u9001\u51FA\u65E5\u671F\u4E0D\u80FD\u665A\u4E8E\u4ECA\u5929\uFF0C\u5F52\u8FD8\u65E5\u671F\u4E0D\u80FD\u65E9\u4E8E\u9001\u51FA\u65E5\u671F");
-      out = await db.prepare("UPDATE samples SET data=json_set(data,'$.sent',?,'$.due',?,'$.batch',?,'$.note',?) WHERE id=? AND json_extract(data,'$.sent') IS NULL").bind(b.sent, b.due, str(b.batch), note || r.note || "", record.id).run();
-    } else if (b.action === "return") {
-      const q = Number(b.quantity);
-      if (!r.sent) return fail("\u5C1A\u672A\u9001\u51FA\uFF0C\u4E0D\u80FD\u767B\u8BB0\u5F52\u8FD8");
-      if (!Number.isInteger(q) || q < 1 || q > 1e6 || !validDate(b.returned_on) || b.returned_on < r.sent.slice(0, 10) || b.returned_on > day()) return fail("\u8BF7\u586B\u5199\u6709\u6548\u7684\u5F52\u8FD8\u6570\u91CF\u548C\u65E5\u671F\uFF0C\u65E5\u671F\u987B\u5728\u9001\u51FA\u65E5\u81F3\u4ECA\u5929\u4E4B\u95F4");
-      if (!/^[a-f0-9-]{36}$/i.test(b.requestId || "")) return fail("\u8BF7\u6C42\u6807\u8BC6\u65E0\u6548\uFF0C\u8BF7\u91CD\u8BD5");
-      out = await db.prepare("INSERT OR IGNORE INTO returns(id,sample_id,quantity,returned_on,note) SELECT ?,id,?,?,? FROM samples WHERE id=? AND quantity-COALESCE((SELECT SUM(quantity) FROM returns WHERE sample_id=?),0)>=?").bind(b.requestId, q, b.returned_on, note, record.id, record.id, q).run();
-    } else if (b.action === "due") {
-      if (!r.sent || !validDate(b.due) || b.due < r.sent.slice(0, 10)) return fail("\u7EA6\u5B9A\u65E5\u671F\u4E0D\u80FD\u65E9\u4E8E\u9001\u51FA\u65E5\u671F");
-      out = await db.prepare("UPDATE samples SET data=json_set(data,'$.due',?,'$.note',?) WHERE id=?").bind(b.due, note || r.note || "", record.id).run();
-    } else return fail("\u4E0D\u652F\u6301\u7684\u64CD\u4F5C");
-    if (!out.meta.changes) return fail("\u8BB0\u5F55\u5DF2\u53D8\u5316\uFF0C\u6216\u5F52\u8FD8\u6570\u91CF\u8D85\u8FC7\u5269\u4F59\u6570\u91CF\uFF0C\u8BF7\u5237\u65B0\u540E\u91CD\u8BD5", 409);
-    return Response.json({ ok: true });
-  } catch (e) {
-    console.error(e);
-    return fail("\u4FDD\u5B58\u672A\u5B8C\u6210\uFF0C\u8BF7\u4FDD\u7559\u8F93\u5165\u5E76\u91CD\u8BD5", 503);
+    try {
+      import_node_fs.default.writeFileSync(fd2, report.data);
+      import_node_fs.default.fsyncSync(fd2);
+      import_node_fs.default.closeSync(fd2);
+      return { file: file2, created: true };
+    } catch (e) {
+      try {
+        import_node_fs.default.closeSync(fd2);
+      } catch {
+      }
+      try {
+        import_node_fs.default.unlinkSync(file2);
+      } catch {
+      }
+      throw e;
+    }
+  }
+}
+function discardAttachment(copy) {
+  if (copy?.created) try {
+    import_node_fs.default.unlinkSync(copy.file);
+  } catch {
   }
 }
 
-// windows-package/source/server.mjs
-var import_node_readline = require("node:readline");
+// windows-package/source/reports.mjs
+var import_node_path2 = __toESM(require("node:path"), 1);
+var maxReportSize = 20 * 1024 * 1024;
+var types = { ".pdf": "application/pdf", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".doc": "application/msword", ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document", ".xls": "application/vnd.ms-excel", ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", ".txt": "text/plain" };
+function problem(message, status = 400) {
+  return Object.assign(new Error(message), { status });
+}
+async function parseReport(file2) {
+  if (!file2 || typeof file2 === "string" || file2.size === 0) return null;
+  if (file2.size > maxReportSize) throw problem("\u6D4B\u8BD5\u62A5\u544A\u4E0D\u80FD\u8D85\u8FC7 20 MB");
+  const name = import_node_path2.default.basename(file2.name.replace(/\\/g, "/")).replace(/[\x00-\x1f\x7f]/g, "").slice(0, 180);
+  const ext = import_node_path2.default.extname(name).toLowerCase();
+  if (!types[ext]) throw problem("\u652F\u6301 PDF\u3001PNG\u3001JPG\u3001Word\u3001Excel \u548C TXT \u6587\u4EF6");
+  const data = Buffer.from(await file2.arrayBuffer());
+  const inline = ext === ".pdf" && data.subarray(0, 5).toString() === "%PDF-" || ext === ".png" && data.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) || [".jpg", ".jpeg"].includes(ext) && data[0] === 255 && data[1] === 216 && data[2] === 255;
+  return { name, data, mime: types[ext], inline: !!inline };
+}
 
 // windows-package/source/export.mjs
 var import_node_fs2 = __toESM(require("node:fs"), 1);
-var import_node_path2 = __toESM(require("node:path"), 1);
+var import_node_path3 = __toESM(require("node:path"), 1);
 
 // rdimm-app/node_modules/fflate/esm/index.mjs
 var import_module = require("module");
@@ -1142,10 +1050,10 @@ function unzipSync(data, opts) {
 }
 
 // windows-package/source/export-template.json
-var export_template_default = "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";
+var export_template_default = "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";
 
 // windows-package/source/export-columns.json
-var export_columns_default = [[["id", "\u8BB0\u5F55\u7F16\u53F7"], ["customer", "\u5BA2\u6237"], ["owner", "\u7533\u8BF7\u4EBA"], ["spec", "\u4EA7\u54C1\u89C4\u683C"], ["batch", "\u6279\u6B21"], ["quantity", "\u7533\u8BF7\u6570\u91CF", "n"], ["sentQuantity", "\u9001\u51FA\u6570\u91CF", "n"], ["returned", "\u5DF2\u5F52\u8FD8\u6570\u91CF", "n"], ["remaining", "\u672A\u5F52\u8FD8\u6570\u91CF", "n"], ["applied", "\u7533\u8BF7\u65E5\u671F", "d"], ["sent", "\u5B9E\u9645\u9001\u6837\u65E5\u671F", "d"], ["due", "\u7EA6\u5B9A\u5F52\u8FD8\u65E5\u671F", "d"], ["status", "\u72B6\u6001"], ["part", "\u6837\u54C1\u6599\u53F7"], ["platform", "\u5BA2\u6237\u5E73\u53F0"], ["note", "\u5907\u6CE8"], ["sourceId", "\u539F\u59CB\u5E8F\u53F7"], ["environment", "\u6D4B\u8BD5\u73AF\u5883"], ["spd", "SPD"], ["printing", "\u4E1D\u5370\u8981\u6C42"], ["label", "\u6807\u7B7E\u8981\u6C42"], ["requested", "\u9700\u6C42\u65E5\u671F", "d"], ["actualReturn", "\u539F\u59CB\u5B9E\u9645\u5F52\u8FD8\u65E5\u671F", "d"], ["urgency", "\u7D27\u6025\u7A0B\u5EA6"], ["category", "\u7C7B\u522B"], ["documents", "\u8D44\u6599"], ["report", "\u62A5\u544A"]], [["id", "\u5F52\u8FD8\u8BB0\u5F55\u7F16\u53F7"], ["sample_id", "\u9001\u6837\u8BB0\u5F55\u7F16\u53F7"], ["customer", "\u5BA2\u6237"], ["owner", "\u7533\u8BF7\u4EBA"], ["spec", "\u4EA7\u54C1\u89C4\u683C"], ["batch", "\u6279\u6B21"], ["returned_on", "\u5B9E\u9645\u5F52\u8FD8\u65E5\u671F", "d"], ["quantity", "\u5F52\u8FD8\u6570\u91CF", "n"], ["note", "\u5F52\u8FD8\u5907\u6CE8"]]];
+var export_columns_default = [[["id", "\u8BB0\u5F55\u7F16\u53F7"], ["customer", "\u5BA2\u6237"], ["owner", "\u7533\u8BF7\u4EBA"], ["spec", "\u4EA7\u54C1\u89C4\u683C"], ["batch", "\u6279\u6B21"], ["quantity", "\u7533\u8BF7\u6570\u91CF", "n"], ["sentQuantity", "\u9001\u51FA\u6570\u91CF", "n"], ["returned", "\u5DF2\u5F52\u8FD8\u6570\u91CF", "n"], ["remaining", "\u672A\u5F52\u8FD8\u6570\u91CF", "n"], ["applied", "\u7533\u8BF7\u65E5\u671F", "d"], ["sent", "\u5B9E\u9645\u9001\u6837\u65E5\u671F", "d"], ["due", "\u7EA6\u5B9A\u5F52\u8FD8\u65E5\u671F", "d"], ["status", "\u72B6\u6001"], ["part", "\u6837\u54C1\u6599\u53F7"], ["platform", "\u5BA2\u6237\u5E73\u53F0"], ["note", "\u5907\u6CE8"], ["sourceId", "\u539F\u59CB\u5E8F\u53F7"], ["environment", "\u6D4B\u8BD5\u73AF\u5883"], ["spd", "SPD"], ["printing", "\u4E1D\u5370\u8981\u6C42"], ["label", "\u6807\u7B7E\u8981\u6C42"], ["requested", "\u9700\u6C42\u65E5\u671F", "d"], ["actualReturn", "\u539F\u59CB\u5B9E\u9645\u5F52\u8FD8\u65E5\u671F", "d"], ["urgency", "\u7D27\u6025\u7A0B\u5EA6"], ["category", "\u7C7B\u522B"], ["documents", "\u8D44\u6599"], ["report", "\u62A5\u544A"]], [["id", "\u5F52\u8FD8\u8BB0\u5F55\u7F16\u53F7"], ["sample_id", "\u9001\u6837\u8BB0\u5F55\u7F16\u53F7"], ["customer", "\u5BA2\u6237"], ["owner", "\u7533\u8BF7\u4EBA"], ["spec", "\u4EA7\u54C1\u89C4\u683C"], ["batch", "\u6279\u6B21"], ["returned_on", "\u5B9E\u9645\u5F52\u8FD8\u65E5\u671F", "d"], ["quantity", "\u5F52\u8FD8\u6570\u91CF", "n"], ["note", "\u5F52\u8FD8\u5907\u6CE8"], ["report_status", "\u5BA2\u6237\u662F\u5426\u63D0\u4F9B\u6D4B\u8BD5\u62A5\u544A"], ["report_name", "\u6D4B\u8BD5\u62A5\u544A\u6587\u4EF6\u540D"]]];
 
 // windows-package/source/export.mjs
 var xml = (v) => String(v ?? "").replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -1154,7 +1062,7 @@ var col = (n) => {
   for (n++; n; n = Math.floor((n - 1) / 26)) s = String.fromCharCode(65 + (n - 1) % 26) + s;
   return s;
 };
-function exportWorkbook(snapshot2, now = /* @__PURE__ */ new Date(), directory = import_node_path2.default.join(process.cwd(), "back_up")) {
+function exportWorkbook(snapshot2, now = /* @__PURE__ */ new Date(), directory = import_node_path3.default.join(process.cwd(), "back_up")) {
   const stamp = new Date(now.getTime() + 8 * 36e5).toISOString().slice(0, 16);
   const day2 = stamp.slice(0, 10);
   const state = (r) => {
@@ -1165,7 +1073,7 @@ function exportWorkbook(snapshot2, now = /* @__PURE__ */ new Date(), directory =
     return d < 0 ? "\u5DF2\u903E\u671F" : d === 0 ? "\u4ECA\u65E5\u5230\u671F" : d <= 7 ? "\u5373\u5C06\u5230\u671F" : r.returned ? "\u90E8\u5206\u5F52\u8FD8" : "\u501F\u51FA\u4E2D";
   };
   const byId = new Map(snapshot2.rows.map((r) => [r.id, r]));
-  const data = [snapshot2.rows.map((r) => ({ ...r, sentQuantity: r.sent ? r.quantity : 0, remaining: r.sent ? r.quantity - r.returned : 0, status: state(r) })), snapshot2.returns.map((r) => ({ ...byId.get(r.sample_id), ...r }))];
+  const data = [snapshot2.rows.map((r) => ({ ...r, sentQuantity: r.sent ? r.quantity : 0, remaining: r.sent ? r.quantity - r.returned : 0, status: state(r) })), snapshot2.returns.map((r) => ({ ...byId.get(r.sample_id), ...r, report_status: r.report_provided === "yes" ? "\u5DF2\u63D0\u4F9B" : r.report_provided === "no" ? "\u672A\u63D0\u4F9B" : "\u672A\u767B\u8BB0" }))];
   const files = unzipSync(Buffer.from(export_template_default, "base64"));
   for (let i = 0; i < 2; i++) {
     if (data[i].length > 1048572) throw Error("\u8BB0\u5F55\u6570\u91CF\u8D85\u8FC7 Excel \u5355\u8868\u4E0A\u9650");
@@ -1189,7 +1097,7 @@ function exportWorkbook(snapshot2, now = /* @__PURE__ */ new Date(), directory =
   const base = stamp.replace("T", "_").replace(":", "-");
   for (let index = 0; ; index++) {
     const filename = base + (index ? "_" + String(index).padStart(2, "0") : "") + ".xlsx";
-    const target = import_node_path2.default.join(directory, filename);
+    const target = import_node_path3.default.join(directory, filename);
     let fd2;
     try {
       fd2 = import_node_fs2.default.openSync(target, "wx");
@@ -1216,9 +1124,220 @@ function exportWorkbook(snapshot2, now = /* @__PURE__ */ new Date(), directory =
   }
 }
 
+// windows-package/source/storage.mjs
+var root = process.env.RDIMM_DATA_DIR || import_node_path4.default.join(process.cwd(), "data");
+import_node_fs3.default.mkdirSync(root, { recursive: true });
+var file = import_node_path4.default.join(root, "rdimm.sqlite");
+var existing = import_node_fs3.default.existsSync(file);
+var sql = new import_node_sqlite.DatabaseSync(file);
+sql.exec("PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL;");
+if (existing) {
+  const backupDir = import_node_path4.default.join(root, "backups");
+  import_node_fs3.default.mkdirSync(backupDir, { recursive: true });
+  const target = import_node_path4.default.join(backupDir, `rdimm-${(/* @__PURE__ */ new Date()).toISOString().slice(0, 10)}.sqlite`);
+  if (!import_node_fs3.default.existsSync(target)) sql.prepare("VACUUM INTO ?").run(target);
+}
+sql.exec(`CREATE TABLE IF NOT EXISTS samples(id TEXT PRIMARY KEY,data TEXT NOT NULL,quantity INTEGER NOT NULL CHECK(quantity>0));
+CREATE TABLE IF NOT EXISTS returns(id TEXT PRIMARY KEY,sample_id TEXT NOT NULL REFERENCES samples(id),quantity INTEGER NOT NULL CHECK(quantity>0),returned_on TEXT NOT NULL,note TEXT NOT NULL DEFAULT '');
+CREATE INDEX IF NOT EXISTS idx_returns_sample ON returns(sample_id);
+CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT NOT NULL);`);
+var returnColumns = new Set(sql.prepare("PRAGMA table_info(returns)").all().map((c) => c.name));
+for (const column of ["report_provided", "report_name"]) if (!returnColumns.has(column)) sql.exec(`ALTER TABLE returns ADD COLUMN ${column} TEXT`);
+sql.exec(`CREATE TABLE IF NOT EXISTS report_files(return_id TEXT PRIMARY KEY REFERENCES returns(id) ON DELETE CASCADE,name TEXT NOT NULL,mime TEXT NOT NULL,inline INTEGER NOT NULL,data BLOB NOT NULL);`);
+if (!sql.prepare("SELECT 1 FROM settings WHERE key='initialized'").get()) {
+  const snapshot2 = JSON.parse(import_node_fs3.default.readFileSync(import_node_path4.default.join(process.cwd(), "initial-data.json"), "utf8"));
+  sql.exec("BEGIN IMMEDIATE");
+  try {
+    for (const r of snapshot2.rows) sql.prepare("INSERT INTO samples(id,data,quantity) VALUES(?,?,?)").run(r.id, JSON.stringify(r), r.quantity);
+    for (const r of snapshot2.returns) sql.prepare("INSERT INTO returns(id,sample_id,quantity,returned_on,note) VALUES(?,?,?,?,?)").run(r.id, r.sample_id, r.quantity, r.returned_on, r.note || "");
+    sql.prepare("INSERT INTO settings VALUES('initialized','1')").run();
+    sql.exec("COMMIT");
+  } catch (e) {
+    sql.exec("ROLLBACK");
+    throw e;
+  }
+}
+function database() {
+  return { prepare(query) {
+    return { bind(...args) {
+      const stmt = sql.prepare(query);
+      return { run() {
+        const r = stmt.run(...args);
+        return { meta: { changes: Number(r.changes) } };
+      }, all() {
+        return { results: stmt.all(...args) };
+      }, first() {
+        return stmt.get(...args) || null;
+      } };
+    }, all() {
+      return { results: sql.prepare(query).all() };
+    } };
+  } };
+}
+async function ensureSeed() {
+}
+function deleteSample(id) {
+  sql.exec("BEGIN IMMEDIATE");
+  try {
+    sql.prepare("DELETE FROM returns WHERE sample_id=?").run(id);
+    const result = sql.prepare("DELETE FROM samples WHERE id=?").run(id);
+    sql.exec("COMMIT");
+    return { ok: true, id, deleted: Number(result.changes) > 0 };
+  } catch (e) {
+    sql.exec("ROLLBACK");
+    throw e;
+  }
+}
+function close() {
+  sql.close();
+}
+function resetSamples(requestId) {
+  const key = "reset:" + requestId;
+  const prior = sql.prepare("SELECT value FROM settings WHERE key=?").get(key);
+  if (prior) return JSON.parse(prior.value);
+  const backupDir = import_node_path4.default.join(root, "backups");
+  import_node_fs3.default.mkdirSync(backupDir, { recursive: true });
+  const backupName = "before-reset-" + (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-") + "-" + (0, import_node_crypto2.randomUUID)().slice(0, 8) + ".sqlite";
+  sql.prepare("VACUUM INTO ?").run(import_node_path4.default.join(backupDir, backupName));
+  const excelBackup = exportWorkbook(snapshot());
+  sql.exec("BEGIN IMMEDIATE");
+  try {
+    const returnsRemoved = Number(sql.prepare("DELETE FROM returns").run().changes);
+    const samplesRemoved = Number(sql.prepare("DELETE FROM samples").run().changes);
+    const result = { ok: true, backup: "data/backups/" + backupName, excelBackup: excelBackup.path, samplesRemoved, returnsRemoved };
+    sql.prepare("INSERT OR REPLACE INTO settings(key,value) VALUES('initialized','1')").run();
+    sql.prepare("INSERT INTO settings(key,value) VALUES(?,?)").run(key, JSON.stringify(result));
+    sql.exec("COMMIT");
+    return result;
+  } catch (e) {
+    sql.exec("ROLLBACK");
+    throw e;
+  }
+}
+function snapshot() {
+  const rows = sql.prepare("SELECT s.*,COALESCE((SELECT SUM(r.quantity) FROM returns r WHERE r.sample_id=s.id),0) returned FROM samples s ORDER BY s.id").all().map((r) => ({ ...JSON.parse(r.data), id: r.id, quantity: r.quantity, returned: r.returned }));
+  return { rows, returns: sql.prepare("SELECT * FROM returns ORDER BY returned_on DESC,id").all() };
+}
+function saveReturn(b, file2 = null, reportOnly = false) {
+  let attachment;
+  const provided = b.report_provided ?? null;
+  if (![null, "yes", "no"].includes(provided) || file2 && provided !== "yes") throw problem("\u8BF7\u9009\u62E9\u5BA2\u6237\u662F\u5426\u63D0\u4F9B\u6D4B\u8BD5\u62A5\u544A\uFF1B\u4E0A\u4F20\u9644\u4EF6\u987B\u9009\u62E9\u5DF2\u63D0\u4F9B");
+  sql.exec("BEGIN IMMEDIATE");
+  try {
+    const existing2 = sql.prepare("SELECT * FROM returns WHERE id=?").get(String(b.requestId || ""));
+    if (reportOnly) {
+      if (!existing2) throw problem("\u672A\u627E\u5230\u5F52\u8FD8\u8BB0\u5F55", 404);
+      if (!file2) throw problem("\u8BF7\u9009\u62E9\u9700\u8981\u4E0A\u4F20\u7684\u6D4B\u8BD5\u62A5\u544A");
+      if (sql.prepare("SELECT 1 FROM report_files WHERE return_id=?").get(existing2.id)) throw problem("\u8BE5\u6B21\u5F52\u8FD8\u5DF2\u4E0A\u4F20\u62A5\u544A\uFF0C\u8BF7\u52FF\u91CD\u590D\u4E0A\u4F20", 409);
+      sql.prepare("UPDATE returns SET report_provided=?,report_name=? WHERE id=?").run("yes", file2.name, existing2.id);
+    } else {
+      if (existing2) throw problem("\u8FD9\u6B21\u5F52\u8FD8\u5DF2\u4FDD\u5B58\uFF0C\u8BF7\u5237\u65B0\u540E\u67E5\u770B", 409);
+      const sample = sql.prepare("SELECT * FROM samples WHERE id=?").get(String(b.id || ""));
+      if (!sample) throw problem("\u672A\u627E\u5230\u9001\u6837\u8BB0\u5F55", 404);
+      const row = JSON.parse(sample.data), q = Number(b.quantity), d = b.returned_on;
+      const today = new Date(Date.now() + 8 * 36e5).toISOString().slice(0, 10);
+      if (!row.sent) throw problem("\u5C1A\u672A\u9001\u51FA\uFF0C\u4E0D\u80FD\u767B\u8BB0\u5F52\u8FD8");
+      if (!Number.isInteger(q) || q < 1 || q > 1e6 || typeof d !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(d) || !Number.isFinite(Date.parse(d)) || new Date(d).toISOString().slice(0, 10) !== d || d < row.sent.slice(0, 10) || d > today) throw problem("\u8BF7\u586B\u5199\u6709\u6548\u7684\u5F52\u8FD8\u6570\u91CF\u548C\u65E5\u671F\uFF0C\u65E5\u671F\u987B\u5728\u9001\u51FA\u65E5\u81F3\u4ECA\u5929\u4E4B\u95F4");
+      if (!/^[a-f0-9-]{36}$/i.test(b.requestId || "")) throw problem("\u8BF7\u6C42\u6807\u8BC6\u65E0\u6548\uFF0C\u8BF7\u91CD\u8BD5");
+      const returned = sql.prepare("SELECT COALESCE(SUM(quantity),0) n FROM returns WHERE sample_id=?").get(sample.id).n;
+      if (q > sample.quantity - returned) throw problem("\u5F52\u8FD8\u6570\u91CF\u8D85\u8FC7\u5269\u4F59\u6570\u91CF\uFF0C\u8BF7\u5237\u65B0\u540E\u91CD\u8BD5", 409);
+      sql.prepare("INSERT INTO returns(id,sample_id,quantity,returned_on,note,report_provided,report_name) VALUES(?,?,?,?,?,?,?)").run(b.requestId, sample.id, q, d, String(b.note || "").trim().slice(0, 2e3), provided, file2?.name || null);
+    }
+    if (file2) sql.prepare("INSERT INTO report_files(return_id,name,mime,inline,data) VALUES(?,?,?,?,?)").run(b.requestId, file2.name, file2.mime, file2.inline ? 1 : 0, file2.data);
+    if (file2) {
+      try {
+        attachment = saveAttachment(b.requestId, file2);
+      } catch {
+        throw problem("Attachment \u6587\u4EF6\u5939\u4FDD\u5B58\u5931\u8D25\uFF0C\u5F52\u8FD8\u548C\u62A5\u544A\u5747\u672A\u4FDD\u5B58\u3002\u8BF7\u68C0\u67E5\u6587\u4EF6\u5939\u6743\u9650\u6216\u78C1\u76D8\u7A7A\u95F4\u540E\u91CD\u8BD5\u3002", 500);
+      }
+    }
+    sql.exec("COMMIT");
+    return { ok: true };
+  } catch (e) {
+    sql.exec("ROLLBACK");
+    discardAttachment(attachment);
+    throw e;
+  }
+}
+function readReport(id) {
+  return sql.prepare("SELECT * FROM report_files WHERE return_id=?").get(id);
+}
+for (const row of sql.prepare("SELECT return_id FROM report_files").all()) {
+  try {
+    saveAttachment(row.return_id, readReport(row.return_id));
+  } catch (e) {
+    console.error("Attachment \u5386\u53F2\u62A5\u544A\u526F\u672C\u4FDD\u5B58\u5931\u8D25\uFF0C\u4E0B\u6B21\u542F\u52A8\u5C06\u91CD\u8BD5\uFF1A", row.return_id, e.message);
+  }
+}
+
+// rdimm-app/app/api/samples/route.ts
+var day = () => new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit" }).format(/* @__PURE__ */ new Date());
+function validDate(x) {
+  return typeof x === "string" && /^\d{4}-\d{2}-\d{2}$/.test(x) && !isNaN(Date.parse(x)) && new Date(x).toISOString().slice(0, 10) === x;
+}
+function str(x, max2 = 200) {
+  return typeof x === "string" ? x.trim().slice(0, max2) : "";
+}
+var fail = (error, status = 400) => Response.json({ error }, { status });
+async function GET() {
+  try {
+    await ensureSeed();
+    const db = database();
+    const result = await db.prepare("SELECT s.*,COALESCE((SELECT SUM(r.quantity) FROM returns r WHERE r.sample_id=s.id),0) returned FROM samples s ORDER BY s.id").all();
+    const returns = await db.prepare("SELECT * FROM returns ORDER BY returned_on DESC,id").all();
+    return Response.json({ rows: result.results.map((r) => ({ ...JSON.parse(r.data), id: r.id, quantity: r.quantity, returned: r.returned })), returns: returns.results }, { headers: { "Cache-Control": "no-store" } });
+  } catch (e) {
+    console.error(e);
+    return fail("\u53F0\u8D26\u6682\u65F6\u65E0\u6CD5\u52A0\u8F7D\uFF0C\u8BF7\u91CD\u8BD5", 503);
+  }
+}
+async function POST(req) {
+  if (req.headers.get("origin") && new URL(req.headers.get("origin")).host !== new URL(req.url).host) return fail("\u8BF7\u6C42\u6765\u6E90\u65E0\u6548", 403);
+  try {
+    const payload = await req.json();
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) return fail("\u8BF7\u6C42\u5185\u5BB9\u65E0\u6548");
+    const b = payload;
+    const db = database();
+    const note = str(b.note, 2e3);
+    let out;
+    if (b.action === "create") {
+      const q = Number(b.quantity);
+      if (!str(b.customer) || !str(b.owner) || !str(b.spec) || !Number.isInteger(q) || q < 1 || q > 1e6) return fail("\u8BF7\u586B\u5199\u5BA2\u6237\u3001\u7533\u8BF7\u4EBA\u3001\u89C4\u683C\u548C\u6709\u6548\u7684\u6574\u6570\u6570\u91CF");
+      if (b.due && !validDate(b.due)) return fail("\u5F52\u8FD8\u65E5\u671F\u65E0\u6548");
+      const id = "RD-" + crypto.randomUUID().slice(0, 8).toUpperCase();
+      const row = { id, customer: str(b.customer), owner: str(b.owner), spec: str(b.spec), quantity: q, platform: str(b.platform), part: str(b.part), batch: str(b.batch), due: b.due || null, applied: day(), sent: null, note, returned: 0 };
+      await db.prepare("INSERT INTO samples(id,data,quantity) VALUES(?,?,?)").bind(id, JSON.stringify(row), q).run();
+      return Response.json({ id });
+    }
+    const record = await db.prepare("SELECT * FROM samples WHERE id=?").bind(str(b.id)).first();
+    if (!record) return fail("\u672A\u627E\u5230\u9001\u6837\u8BB0\u5F55", 404);
+    const r = JSON.parse(record.data);
+    if (b.action === "send") {
+      if (r.sent) return fail("\u8FD9\u7B14\u6837\u54C1\u5DF2\u7ECF\u9001\u51FA\uFF0C\u8BF7\u5237\u65B0\u9875\u9762", 409);
+      if (!str(b.batch) || !validDate(b.sent) || !validDate(b.due) || b.sent > day() || b.due < b.sent) return fail("\u8BF7\u8865\u5145\u6279\u6B21\uFF1B\u9001\u51FA\u65E5\u671F\u4E0D\u80FD\u665A\u4E8E\u4ECA\u5929\uFF0C\u5F52\u8FD8\u65E5\u671F\u4E0D\u80FD\u65E9\u4E8E\u9001\u51FA\u65E5\u671F");
+      out = await db.prepare("UPDATE samples SET data=json_set(data,'$.sent',?,'$.due',?,'$.batch',?,'$.note',?) WHERE id=? AND json_extract(data,'$.sent') IS NULL").bind(b.sent, b.due, str(b.batch), note || r.note || "", record.id).run();
+    } else if (b.action === "return") {
+      const q = Number(b.quantity);
+      if (!r.sent) return fail("\u5C1A\u672A\u9001\u51FA\uFF0C\u4E0D\u80FD\u767B\u8BB0\u5F52\u8FD8");
+      if (!Number.isInteger(q) || q < 1 || q > 1e6 || !validDate(b.returned_on) || b.returned_on < r.sent.slice(0, 10) || b.returned_on > day()) return fail("\u8BF7\u586B\u5199\u6709\u6548\u7684\u5F52\u8FD8\u6570\u91CF\u548C\u65E5\u671F\uFF0C\u65E5\u671F\u987B\u5728\u9001\u51FA\u65E5\u81F3\u4ECA\u5929\u4E4B\u95F4");
+      if (!/^[a-f0-9-]{36}$/i.test(b.requestId || "")) return fail("\u8BF7\u6C42\u6807\u8BC6\u65E0\u6548\uFF0C\u8BF7\u91CD\u8BD5");
+      out = await db.prepare("INSERT OR IGNORE INTO returns(id,sample_id,quantity,returned_on,note) SELECT ?,id,?,?,? FROM samples WHERE id=? AND quantity-COALESCE((SELECT SUM(quantity) FROM returns WHERE sample_id=?),0)>=?").bind(b.requestId, q, b.returned_on, note, record.id, record.id, q).run();
+    } else if (b.action === "due") {
+      if (!r.sent || !validDate(b.due) || b.due < r.sent.slice(0, 10)) return fail("\u7EA6\u5B9A\u65E5\u671F\u4E0D\u80FD\u65E9\u4E8E\u9001\u51FA\u65E5\u671F");
+      out = await db.prepare("UPDATE samples SET data=json_set(data,'$.due',?,'$.note',?) WHERE id=?").bind(b.due, note || r.note || "", record.id).run();
+    } else return fail("\u4E0D\u652F\u6301\u7684\u64CD\u4F5C");
+    if (!out.meta.changes) return fail("\u8BB0\u5F55\u5DF2\u53D8\u5316\uFF0C\u6216\u5F52\u8FD8\u6570\u91CF\u8D85\u8FC7\u5269\u4F59\u6570\u91CF\uFF0C\u8BF7\u5237\u65B0\u540E\u91CD\u8BD5", 409);
+    return Response.json({ ok: true });
+  } catch (e) {
+    console.error(e);
+    return fail("\u4FDD\u5B58\u672A\u5B8C\u6210\uFF0C\u8BF7\u4FDD\u7559\u8F93\u5165\u5E76\u91CD\u8BD5", 503);
+  }
+}
+
 // windows-package/source/server.mjs
-var identity = (0, import_node_crypto2.createHash)("sha256").update(import_node_path3.default.resolve(root)).digest("hex").slice(0, 16);
-var publicDir = import_node_path3.default.resolve("public");
+var import_node_readline = require("node:readline");
+var identity = (0, import_node_crypto3.createHash)("sha256").update(import_node_path5.default.resolve(root)).digest("hex").slice(0, 16);
+var publicDir = import_node_path5.default.resolve("public");
 var mime = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml", ".woff2": "font/woff2" };
 var stopping = false;
 var server = import_node_http.default.createServer(async (req, res) => {
@@ -1238,6 +1357,47 @@ var server = import_node_http.default.createServer(async (req, res) => {
     }
     if (stopping) {
       res.writeHead(503).end(JSON.stringify({ error: "\u7A0B\u5E8F\u6B63\u5728\u9000\u51FA" }));
+      return;
+    }
+    if (url.pathname.startsWith("/api/reports/")) {
+      if (!["GET", "HEAD"].includes(req.method)) {
+        res.writeHead(405).end();
+        return;
+      }
+      const report = readReport(decodeURIComponent(url.pathname.slice("/api/reports/".length)));
+      if (!report) {
+        res.writeHead(404).end("\u62A5\u544A\u4E0D\u5B58\u5728\u6216\u5DF2\u5220\u9664");
+        return;
+      }
+      res.setHeader("Content-Type", report.mime);
+      res.setHeader("Content-Disposition", `${report.inline ? "inline" : "attachment"}; filename="report"; filename*=UTF-8''${encodeURIComponent(report.name).replace(/'/g, "%27")}`);
+      res.setHeader("Content-Security-Policy", "sandbox; default-src 'none'");
+      res.setHeader("Content-Length", report.data.length);
+      res.end(req.method === "HEAD" ? void 0 : Buffer.from(report.data));
+      return;
+    }
+    if (url.pathname === "/api/returns") {
+      res.setHeader("Content-Type", "application/json; charset=utf-8");
+      try {
+        if (req.method !== "POST") throw problem("\u4E0D\u652F\u6301\u7684\u8BF7\u6C42\u65B9\u5F0F", 405);
+        if (req.headers.origin !== url.origin) throw problem("\u8BF7\u6C42\u6765\u6E90\u65E0\u6548", 403);
+        let size = 0;
+        const chunks = [];
+        for await (const chunk of req) {
+          size += chunk.length;
+          if (size > maxReportSize + 65536) throw problem("\u6D4B\u8BD5\u62A5\u544A\u4E0D\u80FD\u8D85\u8FC7 20 MB", 413);
+          chunks.push(chunk);
+        }
+        const form = await new Request(url, { method: "POST", headers: { "Content-Type": req.headers["content-type"] || "" }, body: Buffer.concat(chunks) }).formData();
+        const file3 = await parseReport(form.get("report_file"));
+        const values = Object.fromEntries(form);
+        delete values.report_file;
+        if (!["return", "report"].includes(values.action)) throw problem("\u4E0D\u652F\u6301\u7684\u64CD\u4F5C");
+        res.end(JSON.stringify(saveReturn(values, file3, values.action === "report")));
+      } catch (e) {
+        console.error(e);
+        res.writeHead(e.status || 500).end(JSON.stringify({ error: e.status ? e.message : "\u4FDD\u5B58\u5931\u8D25\uFF0C\u5F52\u8FD8\u548C\u62A5\u544A\u5747\u672A\u4FDD\u5B58\uFF0C\u8BF7\u91CD\u8BD5" }));
+      }
       return;
     }
     if (url.pathname === "/api/export" || url.pathname === "/api/shutdown") {
@@ -1317,7 +1477,7 @@ var server = import_node_http.default.createServer(async (req, res) => {
               response = Response.json(resetSamples(payload.requestId));
             } catch (e) {
               console.error(e);
-              response = Response.json({ error: "\u5907\u4EFD\u6216\u5220\u9664\u5931\u8D25\uFF0C\u53F0\u8D26\u672A\u88AB\u5220\u9664\u3002\u8BF7\u68C0\u67E5\u6570\u636E\u6587\u4EF6\u5939\u662F\u5426\u53EF\u5199\u540E\u91CD\u8BD5\u3002" }, { status: 500 });
+              response = Response.json({ error: "\u5907\u4EFD\u6216\u5220\u9664\u5931\u8D25\uFF0C\u53F0\u8D26\u672A\u88AB\u5220\u9664\u3002\u8BF7\u68C0\u67E5 back_up \u548C data \u6587\u4EF6\u5939\u662F\u5426\u53EF\u5199\u3001\u78C1\u76D8\u7A7A\u95F4\u662F\u5426\u5145\u8DB3\u540E\u91CD\u8BD5\u3002" }, { status: 500 });
             }
           }
         } else if (payload?.action === "delete") {
@@ -1326,6 +1486,13 @@ var server = import_node_http.default.createServer(async (req, res) => {
           } else if (typeof payload.id !== "string" || !payload.id.trim() || payload.id.length > 200 || payload.confirm !== true) {
             response = Response.json({ error: "\u8BF7\u5148\u9009\u62E9\u5E76\u786E\u8BA4\u8981\u5220\u9664\u7684\u8BB0\u5F55" }, { status: 400 });
           } else response = Response.json(deleteSample(payload.id));
+        } else if (payload?.action === "return") {
+          if (req.headers.origin && new URL(req.headers.origin).host !== url.host) response = Response.json({ error: "\u8BF7\u6C42\u6765\u6E90\u65E0\u6548" }, { status: 403 });
+          else try {
+            response = Response.json(saveReturn(payload));
+          } catch (e) {
+            response = Response.json({ error: e.message }, { status: e.status || 500 });
+          }
         } else response = await POST(new Request(url, { method: "POST", headers: req.headers, body }));
       } else {
         res.writeHead(405).end();
@@ -1340,14 +1507,14 @@ var server = import_node_http.default.createServer(async (req, res) => {
       return;
     }
     const name = url.pathname === "/" ? "index.html" : decodeURIComponent(url.pathname).replace(/^\/+/, "");
-    const file2 = import_node_path3.default.resolve(publicDir, name);
-    if (!file2.startsWith(publicDir + import_node_path3.default.sep) || !import_node_fs3.default.existsSync(file2) || !import_node_fs3.default.statSync(file2).isFile()) {
+    const file2 = import_node_path5.default.resolve(publicDir, name);
+    if (!file2.startsWith(publicDir + import_node_path5.default.sep) || !import_node_fs4.default.existsSync(file2) || !import_node_fs4.default.statSync(file2).isFile()) {
       res.writeHead(404).end("Not found");
       return;
     }
-    res.setHeader("Content-Type", mime[import_node_path3.default.extname(file2)] || "application/octet-stream");
+    res.setHeader("Content-Type", mime[import_node_path5.default.extname(file2)] || "application/octet-stream");
     if (req.method === "HEAD") res.end();
-    else import_node_fs3.default.createReadStream(file2).pipe(res);
+    else import_node_fs4.default.createReadStream(file2).pipe(res);
   } catch (e) {
     console.error(e);
     if (!res.headersSent) res.writeHead(500, { "Content-Type": "application/json; charset=utf-8" });

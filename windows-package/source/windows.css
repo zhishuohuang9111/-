@@ -7,3 +7,7 @@
 .utility-button{font-size:14px;padding:11px 14px;border:1px solid #cdd7e3;border-radius:8px;color:#334c68;background:white}.heading-actions button:disabled{opacity:.55;cursor:default}
 
 .heading .close-hint{font-size:13px;line-height:1.6;color:#66758b;max-width:530px}
+
+.return-report{padding:12px;border:1px solid #dce3eb;border-radius:8px;overflow-wrap:anywhere}.return-report p{margin:0 0 8px}.return-report a{color:#2463aa;text-decoration:underline}.sample-form select{padding:10px;border:1px solid #cdd7e3;border-radius:6px;background:white}.sample-form small{font-weight:normal;color:#647187}
+
+.records .pagination-footer{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}.pagination-controls{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.pagination-controls button{border:1px solid #cdd7e3;border-radius:6px;background:white;color:#334c68;padding:6px 10px}.pagination-controls button:disabled{opacity:.4;cursor:default}.records .pagination-footer span{float:none}
