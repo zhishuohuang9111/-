@@ -1,3 +1,4 @@
+import {listArchives,viewArchive,uploadArchive,archiveReport} from './archives.mjs';
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -20,9 +21,23 @@ const server=http.createServer(async(req,res)=>{
   res.setHeader('X-Content-Type-Options','nosniff');res.setHeader('Cache-Control','no-store');
   if(url.pathname==='/health'){res.setHeader('Content-Type','application/json');res.end(JSON.stringify({app:'rdimm-windows',identity}));return}
   if(stopping){res.writeHead(503).end(JSON.stringify({error:'程序正在退出'}));return}
+  if(url.pathname==='/api/archives'||url.pathname==='/api/archive'){
+   res.setHeader('Content-Type','application/json; charset=utf-8');
+   try{
+    let result;
+    if(req.method==='GET')result=url.pathname==='/api/archives'?{archives:listArchives()}:viewArchive(url.searchParams.get('name'));
+    else if(req.method==='POST'&&url.pathname==='/api/archives'){
+     if(req.headers.origin!==url.origin)throw problem('请求来源无效',403);
+     result=await uploadArchive(req,url.searchParams.get('name'));
+    }else throw problem('不支持的请求方式',405);
+    res.end(JSON.stringify(result));
+   }catch(e){res.writeHead(e.status||400).end(JSON.stringify({error:e.status?e.message:'归档读取失败，请检查数据库文件'}))}
+   return;
+  }
   if(url.pathname.startsWith('/api/reports/')){
    if(!['GET','HEAD'].includes(req.method)){res.writeHead(405).end();return}
-   const report=readReport(decodeURIComponent(url.pathname.slice('/api/reports/'.length)));
+   const report=url.searchParams.has('archive')?archiveReport(url.searchParams.get('archive'),decodeURIComponent(url.pathname.slice('/api/reports/'.length))):readReport(decodeURIComponent(url.pathname.slice('/api/reports/'.length)));
+   if(report&&url.searchParams.has('archive')){report.mime='application/octet-stream';report.inline=0;}
    if(!report){res.writeHead(404).end('报告不存在或已删除');return}
    res.setHeader('Content-Type',report.mime);
    res.setHeader('Content-Disposition',`${report.inline?'inline':'attachment'}; filename="report"; filename*=UTF-8''${encodeURIComponent(report.name).replace(/'/g,'%27')}`);
@@ -69,7 +84,7 @@ const server=http.createServer(async(req,res)=>{
     if(payload?.action==='reset'){
      if(req.headers.origin&&new URL(req.headers.origin).host!==url.host){response=Response.json({error:'请求来源无效'},{status:403})}
      else if(payload.confirm!==true||typeof payload.requestId!=='string'||!/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(payload.requestId)){response=Response.json({error:'请先确认删除全部数据'},{status:400})}
-     else {try{response=Response.json(resetSamples(payload.requestId))}catch(e){console.error(e);response=Response.json({error:'备份或删除失败，台账未被删除。请检查 back_up 和 data 文件夹是否可写、磁盘空间是否充足后重试。'},{status:500})}}
+     else {try{response=Response.json(resetSamples(payload.requestId,payload.archiveName))}catch(e){console.error(e);response=Response.json({error:e.status?e.message:'备份、归档或删除失败，台账未被删除。请检查 back_up 和 data 文件夹是否可写、磁盘空间是否充足后重试。'},{status:e.status||500})}}
     }else if(payload?.action==='delete'){
      if(req.headers.origin&&new URL(req.headers.origin).host!==url.host){response=Response.json({error:'请求来源无效'},{status:403})}
      else if(typeof payload.id!=='string'||!payload.id.trim()||payload.id.length>200||payload.confirm!==true){response=Response.json({error:'请先选择并确认要删除的记录'},{status:400})}

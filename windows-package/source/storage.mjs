@@ -1,3 +1,4 @@
+import {reserveArchive,archiveName} from './archives.mjs';
 import {DatabaseSync} from 'node:sqlite';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -45,20 +46,23 @@ export function deleteSample(id){
  }catch(e){sql.exec('ROLLBACK');throw e}
 }
 export function close(){sql.close()}
-export function resetSamples(requestId){
+export function resetSamples(requestId,customName){
  const key='reset:'+requestId;
  const prior=sql.prepare('SELECT value FROM settings WHERE key=?').get(key);
  if(prior)return JSON.parse(prior.value);
+ archiveName(customName);
  const backupDir=path.join(root,'backups');fs.mkdirSync(backupDir,{recursive:true});
  const backupName='before-reset-'+new Date().toISOString().replace(/[:.]/g,'-')+'-'+randomUUID().slice(0,8)+'.sqlite';
  // Backup must succeed before any business data is removed.
  sql.prepare('VACUUM INTO ?').run(path.join(backupDir,backupName));
  const excelBackup=exportWorkbook(snapshot());
+ const archive=reserveArchive(customName);
+ try{sql.prepare('VACUUM INTO ?').run(archive.file)}catch(e){try{fs.unlinkSync(archive.file)}catch{}throw e}
  sql.exec('BEGIN IMMEDIATE');
  try{
   const returnsRemoved=Number(sql.prepare('DELETE FROM returns').run().changes);
   const samplesRemoved=Number(sql.prepare('DELETE FROM samples').run().changes);
-  const result={ok:true,backup:'data/backups/'+backupName,excelBackup:excelBackup.path,samplesRemoved,returnsRemoved};
+  const result={ok:true,backup:'data/backups/'+backupName,excelBackup:excelBackup.path,archive:'data/finished_order/'+archive.filename,samplesRemoved,returnsRemoved};
   sql.prepare("INSERT OR REPLACE INTO settings(key,value) VALUES('initialized','1')").run();
   sql.prepare('INSERT INTO settings(key,value) VALUES(?,?)').run(key,JSON.stringify(result));
   sql.exec('COMMIT');return result;

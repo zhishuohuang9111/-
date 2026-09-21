@@ -22,67 +22,14 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
   mod
 ));
 
-// windows-package/source/server.mjs
-var import_node_http = __toESM(require("node:http"), 1);
-var import_node_fs4 = __toESM(require("node:fs"), 1);
-var import_node_path5 = __toESM(require("node:path"), 1);
-var import_node_crypto3 = require("node:crypto");
-var import_node_child_process = require("node:child_process");
-
-// windows-package/source/storage.mjs
-var import_node_sqlite = require("node:sqlite");
-var import_node_fs3 = __toESM(require("node:fs"), 1);
-var import_node_path4 = __toESM(require("node:path"), 1);
-var import_node_crypto2 = require("node:crypto");
-
-// windows-package/source/attachments.mjs
+// windows-package/source/archives.mjs
 var import_node_fs = __toESM(require("node:fs"), 1);
-var import_node_path = __toESM(require("node:path"), 1);
+var import_node_path2 = __toESM(require("node:path"), 1);
+var import_node_sqlite = require("node:sqlite");
 var import_node_crypto = require("node:crypto");
-function saveAttachment(id, report) {
-  const key = (0, import_node_crypto.createHash)("sha256").update(String(id)).digest("hex").slice(0, 20);
-  const directory = import_node_path.default.join(process.cwd(), "Attachment", key);
-  const original = String(report.name).replace(/[<>:"/\\|?*\x00-\x1f\x7f]/g, "_").replace(/[. ]+$/g, "").slice(0, 160) || "report";
-  const name = "\u62A5\u544A_" + original;
-  import_node_fs.default.mkdirSync(directory, { recursive: true });
-  for (let index = 0; ; index++) {
-    const ext = import_node_path.default.extname(name), base = import_node_path.default.basename(name, ext);
-    const file2 = import_node_path.default.join(directory, index ? `${base}_${index}${ext}` : name);
-    let fd2;
-    try {
-      fd2 = import_node_fs.default.openSync(file2, "wx");
-    } catch (e) {
-      if (e.code !== "EEXIST") throw e;
-      if (import_node_fs.default.lstatSync(file2).isFile() && import_node_fs.default.readFileSync(file2).equals(Buffer.from(report.data))) return { file: file2, created: false };
-      continue;
-    }
-    try {
-      import_node_fs.default.writeFileSync(fd2, report.data);
-      import_node_fs.default.fsyncSync(fd2);
-      import_node_fs.default.closeSync(fd2);
-      return { file: file2, created: true };
-    } catch (e) {
-      try {
-        import_node_fs.default.closeSync(fd2);
-      } catch {
-      }
-      try {
-        import_node_fs.default.unlinkSync(file2);
-      } catch {
-      }
-      throw e;
-    }
-  }
-}
-function discardAttachment(copy) {
-  if (copy?.created) try {
-    import_node_fs.default.unlinkSync(copy.file);
-  } catch {
-  }
-}
 
 // windows-package/source/reports.mjs
-var import_node_path2 = __toESM(require("node:path"), 1);
+var import_node_path = __toESM(require("node:path"), 1);
 var maxReportSize = 20 * 1024 * 1024;
 var types = { ".pdf": "application/pdf", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".doc": "application/msword", ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document", ".xls": "application/vnd.ms-excel", ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", ".txt": "text/plain" };
 function problem(message, status = 400) {
@@ -91,17 +38,194 @@ function problem(message, status = 400) {
 async function parseReport(file2) {
   if (!file2 || typeof file2 === "string" || file2.size === 0) return null;
   if (file2.size > maxReportSize) throw problem("\u6D4B\u8BD5\u62A5\u544A\u4E0D\u80FD\u8D85\u8FC7 20 MB");
-  const name = import_node_path2.default.basename(file2.name.replace(/\\/g, "/")).replace(/[\x00-\x1f\x7f]/g, "").slice(0, 180);
-  const ext = import_node_path2.default.extname(name).toLowerCase();
+  const name = import_node_path.default.basename(file2.name.replace(/\\/g, "/")).replace(/[\x00-\x1f\x7f]/g, "").slice(0, 180);
+  const ext = import_node_path.default.extname(name).toLowerCase();
   if (!types[ext]) throw problem("\u652F\u6301 PDF\u3001PNG\u3001JPG\u3001Word\u3001Excel \u548C TXT \u6587\u4EF6");
   const data = Buffer.from(await file2.arrayBuffer());
   const inline = ext === ".pdf" && data.subarray(0, 5).toString() === "%PDF-" || ext === ".png" && data.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) || [".jpg", ".jpeg"].includes(ext) && data[0] === 255 && data[1] === 216 && data[2] === 255;
   return { name, data, mime: types[ext], inline: !!inline };
 }
 
-// windows-package/source/export.mjs
+// windows-package/source/archives.mjs
+var archiveDir = import_node_path2.default.join(process.env.RDIMM_DATA_DIR || import_node_path2.default.join(process.cwd(), "data"), "finished_order");
+function archiveName(value) {
+  const fallback = "\u5F52\u6863_" + new Date(Date.now() + 8 * 36e5).toISOString().slice(0, 16).replace("T", "_").replace(":", "-");
+  const name = String(value || fallback).trim().replace(/\.(sqlite|db)$/i, "");
+  if (!name || name.length > 100 || /[<>:"/\\|?*\x00-\x1f]/.test(name) || /[. ]$/.test(name) || /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(name)) throw problem("\u5F52\u6863\u540D\u79F0\u4E0D\u80FD\u5305\u542B\u8DEF\u5F84\u3001\u7279\u6B8A\u5B57\u7B26\u6216 Windows \u4FDD\u7559\u540D\u79F0\uFF0C\u6700\u591A 100 \u4E2A\u5B57\u7B26");
+  return name + ".sqlite";
+}
+function reserveArchive(value) {
+  import_node_fs.default.mkdirSync(archiveDir, { recursive: true });
+  const name = archiveName(value), base = name.slice(0, -7);
+  for (let i = 0; ; i++) {
+    const filename = i ? `${base}_${i}.sqlite` : name;
+    try {
+      const fd2 = import_node_fs.default.openSync(import_node_path2.default.join(archiveDir, filename), "wx");
+      import_node_fs.default.closeSync(fd2);
+      return { filename, file: import_node_path2.default.join(archiveDir, filename) };
+    } catch (e) {
+      if (e.code !== "EEXIST") throw e;
+    }
+  }
+}
+function resolved(name) {
+  if (typeof name !== "string" || import_node_path2.default.basename(name) !== name || !name.endsWith(".sqlite")) throw problem("\u5F52\u6863\u540D\u79F0\u65E0\u6548");
+  const file2 = import_node_path2.default.join(archiveDir, name);
+  if (!import_node_fs.default.existsSync(file2) || !import_node_fs.default.lstatSync(file2).isFile()) throw problem("\u672A\u627E\u5230\u6570\u636E\u5E93\u5F52\u6863", 404);
+  return file2;
+}
+function listArchives() {
+  if (!import_node_fs.default.existsSync(archiveDir)) return [];
+  return import_node_fs.default.readdirSync(archiveDir).filter((n) => n.endsWith(".sqlite") && import_node_fs.default.lstatSync(import_node_path2.default.join(archiveDir, n)).isFile()).map((name) => {
+    const s = import_node_fs.default.statSync(import_node_path2.default.join(archiveDir, name));
+    return { name, size: s.size, modified: s.mtime.toISOString() };
+  }).sort((a, b) => b.modified.localeCompare(a.modified));
+}
+function inspect(file2, reportId) {
+  const db = new import_node_sqlite.DatabaseSync(file2, { readOnly: true, allowExtension: false });
+  try {
+    db.exec("PRAGMA query_only=ON; PRAGMA trusted_schema=OFF;");
+    for (const name of ["samples", "returns"]) if (!db.prepare("SELECT 1 FROM sqlite_schema WHERE type='table' AND name=?").get(name)) throw problem("\u4E0D\u662F\u517C\u5BB9\u7684 RDIMM \u6570\u636E\u5E93");
+    if (reportId !== void 0) {
+      if (!db.prepare("SELECT 1 FROM sqlite_schema WHERE type='table' AND name='report_files'").get()) return null;
+      return db.prepare("SELECT name,mime,inline,data FROM report_files WHERE return_id=?").get(reportId);
+    }
+    const rows = db.prepare("SELECT id,data,quantity FROM samples ORDER BY id").all().map((r) => {
+      const data = JSON.parse(r.data);
+      if (!data || typeof data !== "object" || Array.isArray(data) || !Number.isInteger(r.quantity) || r.quantity < 1) throw problem("\u6570\u636E\u5E93\u4E2D\u7684\u9001\u6837\u8BB0\u5F55\u683C\u5F0F\u65E0\u6548");
+      const row = { id: String(r.id), quantity: r.quantity, returned: 0 };
+      for (const [k, v] of Object.entries(data)) if (!["id", "quantity", "returned", "__proto__", "constructor", "prototype"].includes(k)) row[k] = v == null ? null : String(v);
+      return row;
+    });
+    const columns = new Set(db.prepare("PRAGMA table_info(returns)").all().map((c) => c.name));
+    const returns = db.prepare(`SELECT id,sample_id,quantity,returned_on,note,${columns.has("report_provided") ? "report_provided" : "NULL AS report_provided"},${columns.has("report_name") ? "report_name" : "NULL AS report_name"} FROM returns ORDER BY returned_on DESC,id`).all();
+    const byId = new Map(rows.map((r) => [r.id, r]));
+    for (const r of returns) {
+      if (!byId.has(r.sample_id) || !Number.isInteger(r.quantity) || r.quantity < 1) throw problem("\u6570\u636E\u5E93\u4E2D\u7684\u5F52\u8FD8\u660E\u7EC6\u683C\u5F0F\u65E0\u6548");
+      byId.get(r.sample_id).returned += r.quantity;
+    }
+    return { rows, returns };
+  } finally {
+    db.close();
+  }
+}
+function viewArchive(name) {
+  return inspect(resolved(name));
+}
+function archiveReport(name, id) {
+  return inspect(resolved(name), id);
+}
+async function uploadArchive(req, name) {
+  import_node_fs.default.mkdirSync(archiveDir, { recursive: true });
+  const temp = import_node_path2.default.join(archiveDir, ".upload-" + (0, import_node_crypto.randomUUID)());
+  let fd2, allocated;
+  try {
+    archiveName(name);
+    fd2 = import_node_fs.default.openSync(temp, "wx");
+    let size = 0;
+    for await (const chunk of req) {
+      size += chunk.length;
+      if (size > 512 * 1024 * 1024) throw problem("\u6570\u636E\u5E93\u4E0A\u4F20\u4E0A\u9650\u4E3A 512 MB", 413);
+      import_node_fs.default.writeFileSync(fd2, chunk);
+    }
+    import_node_fs.default.fsyncSync(fd2);
+    import_node_fs.default.closeSync(fd2);
+    fd2 = void 0;
+    const check = import_node_fs.default.openSync(temp, "r");
+    const signature = Buffer.alloc(16);
+    import_node_fs.default.readSync(check, signature, 0, 16, 0);
+    import_node_fs.default.closeSync(check);
+    if (signature.toString() !== "SQLite format 3\0") throw problem("\u8BF7\u9009\u62E9\u5B8C\u6574\u7684 SQLite \u6570\u636E\u5E93\u6587\u4EF6\uFF08.sqlite \u6216 .db\uFF09");
+    const verify = new import_node_sqlite.DatabaseSync(temp, { readOnly: true, allowExtension: false });
+    try {
+      verify.exec("PRAGMA trusted_schema=OFF");
+      if (verify.prepare("PRAGMA quick_check").get().quick_check !== "ok") throw problem("\u6570\u636E\u5E93\u5B8C\u6574\u6027\u68C0\u67E5\u5931\u8D25");
+    } finally {
+      verify.close();
+    }
+    inspect(temp);
+    allocated = reserveArchive(name);
+    import_node_fs.default.copyFileSync(temp, allocated.file);
+    return { ok: true, name: allocated.filename };
+  } catch (e) {
+    if (allocated) try {
+      import_node_fs.default.unlinkSync(allocated.file);
+    } catch {
+    }
+    ;
+    if (e.status) throw e;
+    throw problem("\u6570\u636E\u5E93\u65E0\u6CD5\u4FDD\u5B58\u6216\u8BFB\u53D6\uFF0C\u8BF7\u68C0\u67E5\u6587\u4EF6\u5939\u6743\u9650\u3001\u78C1\u76D8\u7A7A\u95F4\uFF0C\u5E76\u9009\u62E9\u5B8C\u6574\u4E14\u517C\u5BB9\u7684 RDIMM \u6570\u636E\u5E93");
+  } finally {
+    if (fd2 !== void 0) import_node_fs.default.closeSync(fd2);
+    try {
+      import_node_fs.default.unlinkSync(temp);
+    } catch {
+    }
+  }
+}
+
+// windows-package/source/server.mjs
+var import_node_http = __toESM(require("node:http"), 1);
+var import_node_fs5 = __toESM(require("node:fs"), 1);
+var import_node_path6 = __toESM(require("node:path"), 1);
+var import_node_crypto4 = require("node:crypto");
+var import_node_child_process = require("node:child_process");
+
+// windows-package/source/storage.mjs
+var import_node_sqlite2 = require("node:sqlite");
+var import_node_fs4 = __toESM(require("node:fs"), 1);
+var import_node_path5 = __toESM(require("node:path"), 1);
+var import_node_crypto3 = require("node:crypto");
+
+// windows-package/source/attachments.mjs
 var import_node_fs2 = __toESM(require("node:fs"), 1);
 var import_node_path3 = __toESM(require("node:path"), 1);
+var import_node_crypto2 = require("node:crypto");
+function saveAttachment(id, report) {
+  const key = (0, import_node_crypto2.createHash)("sha256").update(String(id)).digest("hex").slice(0, 20);
+  const directory = import_node_path3.default.join(process.cwd(), "Attachment", key);
+  const original = String(report.name).replace(/[<>:"/\\|?*\x00-\x1f\x7f]/g, "_").replace(/[. ]+$/g, "").slice(0, 160) || "report";
+  const name = "\u62A5\u544A_" + original;
+  import_node_fs2.default.mkdirSync(directory, { recursive: true });
+  for (let index = 0; ; index++) {
+    const ext = import_node_path3.default.extname(name), base = import_node_path3.default.basename(name, ext);
+    const file2 = import_node_path3.default.join(directory, index ? `${base}_${index}${ext}` : name);
+    let fd2;
+    try {
+      fd2 = import_node_fs2.default.openSync(file2, "wx");
+    } catch (e) {
+      if (e.code !== "EEXIST") throw e;
+      if (import_node_fs2.default.lstatSync(file2).isFile() && import_node_fs2.default.readFileSync(file2).equals(Buffer.from(report.data))) return { file: file2, created: false };
+      continue;
+    }
+    try {
+      import_node_fs2.default.writeFileSync(fd2, report.data);
+      import_node_fs2.default.fsyncSync(fd2);
+      import_node_fs2.default.closeSync(fd2);
+      return { file: file2, created: true };
+    } catch (e) {
+      try {
+        import_node_fs2.default.closeSync(fd2);
+      } catch {
+      }
+      try {
+        import_node_fs2.default.unlinkSync(file2);
+      } catch {
+      }
+      throw e;
+    }
+  }
+}
+function discardAttachment(copy) {
+  if (copy?.created) try {
+    import_node_fs2.default.unlinkSync(copy.file);
+  } catch {
+  }
+}
+
+// windows-package/source/export.mjs
+var import_node_fs3 = __toESM(require("node:fs"), 1);
+var import_node_path4 = __toESM(require("node:path"), 1);
 
 // rdimm-app/node_modules/fflate/esm/index.mjs
 var import_module = require("module");
@@ -1062,7 +1186,7 @@ var col = (n) => {
   for (n++; n; n = Math.floor((n - 1) / 26)) s = String.fromCharCode(65 + (n - 1) % 26) + s;
   return s;
 };
-function exportWorkbook(snapshot2, now = /* @__PURE__ */ new Date(), directory = import_node_path3.default.join(process.cwd(), "back_up")) {
+function exportWorkbook(snapshot2, now = /* @__PURE__ */ new Date(), directory = import_node_path4.default.join(process.cwd(), "back_up")) {
   const stamp = new Date(now.getTime() + 8 * 36e5).toISOString().slice(0, 16);
   const day2 = stamp.slice(0, 10);
   const state = (r) => {
@@ -1093,29 +1217,29 @@ function exportWorkbook(snapshot2, now = /* @__PURE__ */ new Date(), directory =
     files[file2] = strToU8(sheet);
   }
   const bytes = zipSync(files, { level: 6 });
-  import_node_fs2.default.mkdirSync(directory, { recursive: true });
+  import_node_fs3.default.mkdirSync(directory, { recursive: true });
   const base = stamp.replace("T", "_").replace(":", "-");
   for (let index = 0; ; index++) {
     const filename = base + (index ? "_" + String(index).padStart(2, "0") : "") + ".xlsx";
-    const target = import_node_path3.default.join(directory, filename);
+    const target = import_node_path4.default.join(directory, filename);
     let fd2;
     try {
-      fd2 = import_node_fs2.default.openSync(target, "wx");
+      fd2 = import_node_fs3.default.openSync(target, "wx");
     } catch (e) {
       if (e.code === "EEXIST") continue;
       throw e;
     }
     try {
-      import_node_fs2.default.writeFileSync(fd2, bytes);
-      import_node_fs2.default.fsyncSync(fd2);
-      import_node_fs2.default.closeSync(fd2);
+      import_node_fs3.default.writeFileSync(fd2, bytes);
+      import_node_fs3.default.fsyncSync(fd2);
+      import_node_fs3.default.closeSync(fd2);
     } catch (e) {
       try {
-        import_node_fs2.default.closeSync(fd2);
+        import_node_fs3.default.closeSync(fd2);
       } catch {
       }
       try {
-        import_node_fs2.default.unlinkSync(target);
+        import_node_fs3.default.unlinkSync(target);
       } catch {
       }
       throw e;
@@ -1125,17 +1249,17 @@ function exportWorkbook(snapshot2, now = /* @__PURE__ */ new Date(), directory =
 }
 
 // windows-package/source/storage.mjs
-var root = process.env.RDIMM_DATA_DIR || import_node_path4.default.join(process.cwd(), "data");
-import_node_fs3.default.mkdirSync(root, { recursive: true });
-var file = import_node_path4.default.join(root, "rdimm.sqlite");
-var existing = import_node_fs3.default.existsSync(file);
-var sql = new import_node_sqlite.DatabaseSync(file);
+var root = process.env.RDIMM_DATA_DIR || import_node_path5.default.join(process.cwd(), "data");
+import_node_fs4.default.mkdirSync(root, { recursive: true });
+var file = import_node_path5.default.join(root, "rdimm.sqlite");
+var existing = import_node_fs4.default.existsSync(file);
+var sql = new import_node_sqlite2.DatabaseSync(file);
 sql.exec("PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL;");
 if (existing) {
-  const backupDir = import_node_path4.default.join(root, "backups");
-  import_node_fs3.default.mkdirSync(backupDir, { recursive: true });
-  const target = import_node_path4.default.join(backupDir, `rdimm-${(/* @__PURE__ */ new Date()).toISOString().slice(0, 10)}.sqlite`);
-  if (!import_node_fs3.default.existsSync(target)) sql.prepare("VACUUM INTO ?").run(target);
+  const backupDir = import_node_path5.default.join(root, "backups");
+  import_node_fs4.default.mkdirSync(backupDir, { recursive: true });
+  const target = import_node_path5.default.join(backupDir, `rdimm-${(/* @__PURE__ */ new Date()).toISOString().slice(0, 10)}.sqlite`);
+  if (!import_node_fs4.default.existsSync(target)) sql.prepare("VACUUM INTO ?").run(target);
 }
 sql.exec(`CREATE TABLE IF NOT EXISTS samples(id TEXT PRIMARY KEY,data TEXT NOT NULL,quantity INTEGER NOT NULL CHECK(quantity>0));
 CREATE TABLE IF NOT EXISTS returns(id TEXT PRIMARY KEY,sample_id TEXT NOT NULL REFERENCES samples(id),quantity INTEGER NOT NULL CHECK(quantity>0),returned_on TEXT NOT NULL,note TEXT NOT NULL DEFAULT '');
@@ -1145,7 +1269,7 @@ var returnColumns = new Set(sql.prepare("PRAGMA table_info(returns)").all().map(
 for (const column of ["report_provided", "report_name"]) if (!returnColumns.has(column)) sql.exec(`ALTER TABLE returns ADD COLUMN ${column} TEXT`);
 sql.exec(`CREATE TABLE IF NOT EXISTS report_files(return_id TEXT PRIMARY KEY REFERENCES returns(id) ON DELETE CASCADE,name TEXT NOT NULL,mime TEXT NOT NULL,inline INTEGER NOT NULL,data BLOB NOT NULL);`);
 if (!sql.prepare("SELECT 1 FROM settings WHERE key='initialized'").get()) {
-  const snapshot2 = JSON.parse(import_node_fs3.default.readFileSync(import_node_path4.default.join(process.cwd(), "initial-data.json"), "utf8"));
+  const snapshot2 = JSON.parse(import_node_fs4.default.readFileSync(import_node_path5.default.join(process.cwd(), "initial-data.json"), "utf8"));
   sql.exec("BEGIN IMMEDIATE");
   try {
     for (const r of snapshot2.rows) sql.prepare("INSERT INTO samples(id,data,quantity) VALUES(?,?,?)").run(r.id, JSON.stringify(r), r.quantity);
@@ -1191,20 +1315,31 @@ function deleteSample(id) {
 function close() {
   sql.close();
 }
-function resetSamples(requestId) {
+function resetSamples(requestId, customName) {
   const key = "reset:" + requestId;
   const prior = sql.prepare("SELECT value FROM settings WHERE key=?").get(key);
   if (prior) return JSON.parse(prior.value);
-  const backupDir = import_node_path4.default.join(root, "backups");
-  import_node_fs3.default.mkdirSync(backupDir, { recursive: true });
-  const backupName = "before-reset-" + (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-") + "-" + (0, import_node_crypto2.randomUUID)().slice(0, 8) + ".sqlite";
-  sql.prepare("VACUUM INTO ?").run(import_node_path4.default.join(backupDir, backupName));
+  archiveName(customName);
+  const backupDir = import_node_path5.default.join(root, "backups");
+  import_node_fs4.default.mkdirSync(backupDir, { recursive: true });
+  const backupName = "before-reset-" + (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-") + "-" + (0, import_node_crypto3.randomUUID)().slice(0, 8) + ".sqlite";
+  sql.prepare("VACUUM INTO ?").run(import_node_path5.default.join(backupDir, backupName));
   const excelBackup = exportWorkbook(snapshot());
+  const archive = reserveArchive(customName);
+  try {
+    sql.prepare("VACUUM INTO ?").run(archive.file);
+  } catch (e) {
+    try {
+      import_node_fs4.default.unlinkSync(archive.file);
+    } catch {
+    }
+    throw e;
+  }
   sql.exec("BEGIN IMMEDIATE");
   try {
     const returnsRemoved = Number(sql.prepare("DELETE FROM returns").run().changes);
     const samplesRemoved = Number(sql.prepare("DELETE FROM samples").run().changes);
-    const result = { ok: true, backup: "data/backups/" + backupName, excelBackup: excelBackup.path, samplesRemoved, returnsRemoved };
+    const result = { ok: true, backup: "data/backups/" + backupName, excelBackup: excelBackup.path, archive: "data/finished_order/" + archive.filename, samplesRemoved, returnsRemoved };
     sql.prepare("INSERT OR REPLACE INTO settings(key,value) VALUES('initialized','1')").run();
     sql.prepare("INSERT INTO settings(key,value) VALUES(?,?)").run(key, JSON.stringify(result));
     sql.exec("COMMIT");
@@ -1336,8 +1471,8 @@ async function POST(req) {
 
 // windows-package/source/server.mjs
 var import_node_readline = require("node:readline");
-var identity = (0, import_node_crypto3.createHash)("sha256").update(import_node_path5.default.resolve(root)).digest("hex").slice(0, 16);
-var publicDir = import_node_path5.default.resolve("public");
+var identity = (0, import_node_crypto4.createHash)("sha256").update(import_node_path6.default.resolve(root)).digest("hex").slice(0, 16);
+var publicDir = import_node_path6.default.resolve("public");
 var mime = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml", ".woff2": "font/woff2" };
 var stopping = false;
 var server = import_node_http.default.createServer(async (req, res) => {
@@ -1359,12 +1494,31 @@ var server = import_node_http.default.createServer(async (req, res) => {
       res.writeHead(503).end(JSON.stringify({ error: "\u7A0B\u5E8F\u6B63\u5728\u9000\u51FA" }));
       return;
     }
+    if (url.pathname === "/api/archives" || url.pathname === "/api/archive") {
+      res.setHeader("Content-Type", "application/json; charset=utf-8");
+      try {
+        let result;
+        if (req.method === "GET") result = url.pathname === "/api/archives" ? { archives: listArchives() } : viewArchive(url.searchParams.get("name"));
+        else if (req.method === "POST" && url.pathname === "/api/archives") {
+          if (req.headers.origin !== url.origin) throw problem("\u8BF7\u6C42\u6765\u6E90\u65E0\u6548", 403);
+          result = await uploadArchive(req, url.searchParams.get("name"));
+        } else throw problem("\u4E0D\u652F\u6301\u7684\u8BF7\u6C42\u65B9\u5F0F", 405);
+        res.end(JSON.stringify(result));
+      } catch (e) {
+        res.writeHead(e.status || 400).end(JSON.stringify({ error: e.status ? e.message : "\u5F52\u6863\u8BFB\u53D6\u5931\u8D25\uFF0C\u8BF7\u68C0\u67E5\u6570\u636E\u5E93\u6587\u4EF6" }));
+      }
+      return;
+    }
     if (url.pathname.startsWith("/api/reports/")) {
       if (!["GET", "HEAD"].includes(req.method)) {
         res.writeHead(405).end();
         return;
       }
-      const report = readReport(decodeURIComponent(url.pathname.slice("/api/reports/".length)));
+      const report = url.searchParams.has("archive") ? archiveReport(url.searchParams.get("archive"), decodeURIComponent(url.pathname.slice("/api/reports/".length))) : readReport(decodeURIComponent(url.pathname.slice("/api/reports/".length)));
+      if (report && url.searchParams.has("archive")) {
+        report.mime = "application/octet-stream";
+        report.inline = 0;
+      }
       if (!report) {
         res.writeHead(404).end("\u62A5\u544A\u4E0D\u5B58\u5728\u6216\u5DF2\u5220\u9664");
         return;
@@ -1474,10 +1628,10 @@ var server = import_node_http.default.createServer(async (req, res) => {
             response = Response.json({ error: "\u8BF7\u5148\u786E\u8BA4\u5220\u9664\u5168\u90E8\u6570\u636E" }, { status: 400 });
           } else {
             try {
-              response = Response.json(resetSamples(payload.requestId));
+              response = Response.json(resetSamples(payload.requestId, payload.archiveName));
             } catch (e) {
               console.error(e);
-              response = Response.json({ error: "\u5907\u4EFD\u6216\u5220\u9664\u5931\u8D25\uFF0C\u53F0\u8D26\u672A\u88AB\u5220\u9664\u3002\u8BF7\u68C0\u67E5 back_up \u548C data \u6587\u4EF6\u5939\u662F\u5426\u53EF\u5199\u3001\u78C1\u76D8\u7A7A\u95F4\u662F\u5426\u5145\u8DB3\u540E\u91CD\u8BD5\u3002" }, { status: 500 });
+              response = Response.json({ error: e.status ? e.message : "\u5907\u4EFD\u3001\u5F52\u6863\u6216\u5220\u9664\u5931\u8D25\uFF0C\u53F0\u8D26\u672A\u88AB\u5220\u9664\u3002\u8BF7\u68C0\u67E5 back_up \u548C data \u6587\u4EF6\u5939\u662F\u5426\u53EF\u5199\u3001\u78C1\u76D8\u7A7A\u95F4\u662F\u5426\u5145\u8DB3\u540E\u91CD\u8BD5\u3002" }, { status: e.status || 500 });
             }
           }
         } else if (payload?.action === "delete") {
@@ -1507,14 +1661,14 @@ var server = import_node_http.default.createServer(async (req, res) => {
       return;
     }
     const name = url.pathname === "/" ? "index.html" : decodeURIComponent(url.pathname).replace(/^\/+/, "");
-    const file2 = import_node_path5.default.resolve(publicDir, name);
-    if (!file2.startsWith(publicDir + import_node_path5.default.sep) || !import_node_fs4.default.existsSync(file2) || !import_node_fs4.default.statSync(file2).isFile()) {
+    const file2 = import_node_path6.default.resolve(publicDir, name);
+    if (!file2.startsWith(publicDir + import_node_path6.default.sep) || !import_node_fs5.default.existsSync(file2) || !import_node_fs5.default.statSync(file2).isFile()) {
       res.writeHead(404).end("Not found");
       return;
     }
-    res.setHeader("Content-Type", mime[import_node_path5.default.extname(file2)] || "application/octet-stream");
+    res.setHeader("Content-Type", mime[import_node_path6.default.extname(file2)] || "application/octet-stream");
     if (req.method === "HEAD") res.end();
-    else import_node_fs4.default.createReadStream(file2).pipe(res);
+    else import_node_fs5.default.createReadStream(file2).pipe(res);
   } catch (e) {
     console.error(e);
     if (!res.headersSent) res.writeHead(500, { "Content-Type": "application/json; charset=utf-8" });

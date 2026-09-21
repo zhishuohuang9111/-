@@ -52,7 +52,27 @@ with tempfile.TemporaryDirectory(prefix='rdimm-reports-') as tmp:
   with sqlite3.connect(db) as c:c.execute("CREATE TRIGGER reject_report BEFORE INSERT ON report_files BEGIN SELECT RAISE(ABORT,'test'); END")
   before=read();assert upload({**values,'requestId':str(uuid.uuid4())},'report.pdf',pdf)[0]==500;assert read()==before
   with sqlite3.connect(db) as c:c.execute('DROP TRIGGER reject_report')
-  code,result=post(action='reset',confirm=True,requestId=str(uuid.uuid4()));assert code==200,result
+  before_reset=read()
+  (root/'data/finished_order').write_text('blocked')
+  assert post(action='reset',confirm=True,requestId=str(uuid.uuid4()),archiveName='客户结单')[0]==500
+  assert read()==before_reset
+  (root/'data/finished_order').unlink()
+  code,result=post(action='reset',confirm=True,requestId=str(uuid.uuid4()),archiveName='客户结单');assert code==200,result
+  assert result['archive']=='data/finished_order/客户结单.sqlite'
+  archived_name=pathlib.Path(result['archive']).name
+  from urllib.parse import quote
+  archive=json.load(opener.open(base+'/api/archive?name='+quote(archived_name)))
+  assert len(archive['rows'])==len(before_reset['rows']) and archive['returns']==before_reset['returns']
+  assert opener.open(base+'/api/reports/'+key+'?archive='+quote(archived_name)).read()==pdf
+  live=read();archive_bytes=(root/result['archive']).read_bytes()
+  code,uploaded=send('/api/archives?name='+quote(archived_name),archive_bytes,'application/octet-stream');assert code==200,uploaded
+  assert uploaded['name']!=archived_name and read()==live
+  assert send('/api/archives?name=bad.sqlite',b'not a database','application/octet-stream')[0]==400
+  assert send('/api/archives?name=evil.sqlite',archive_bytes,'application/octet-stream','http://evil.example')[0]==403
+  assert send('/api/archives?name=..%2Fescape.sqlite',archive_bytes,'application/octet-stream')[0]==400
+  assert read()==live
+  assert (root/result['archive']).read_bytes()==archive_bytes
+
   book=load_workbook(root/result['excelBackup']);sheet=book['归还明细'];exported={r[0]:r for r in sheet.iter_rows(min_row=5,values_only=True)}
   assert exported[key][-2:]==('已提供','客户报告.pdf')
   with sqlite3.connect(root/result['backup']) as c:assert c.execute('SELECT data FROM report_files WHERE return_id=?',(key,)).fetchone()[0]==pdf
